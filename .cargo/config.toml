@@ -1,0 +1,5 @@
+# Hardware floor: x86-64-v3 = AVX2 + FMA + BMI1/2 + F16C + LZCNT + MOVBE
+# (Intel Haswell 2013+, AMD Excavator/Zen 2015+). forja::cpu::check_floor() verifies it at startup.
+# Remove these lines to build for any x86-64 CPU; the code then uses the portable SIMD path.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-cpu=x86-64-v3"]
