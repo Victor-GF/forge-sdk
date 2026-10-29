@@ -36,9 +36,12 @@ pub enum PlatformError {
     TitleTooLong,
     RegisterClass,
     CreateWindow,
-    /// Sem servidor gráfico: no Linux, `libX11.so.6` ausente ou `DISPLAY` sem servidor X.
+    /// Sem servidor gráfico: no Linux, `DISPLAY` vazio ou sem servidor X respondendo.
     /// Use `Platform::headless`.
     DisplayUnavailable,
+    /// Só Linux: `libX11.so.6` não encontrada (pacote `libx11-6`) ou sem alguma função usada.
+    /// Acontece em servidor ou imagem mínima; desktops trazem a biblioteca.
+    DisplayLibraryMissing,
 }
 
 /// Tamanho máximo de título (em unidades UTF-16, com o 0 final).
@@ -98,7 +101,8 @@ impl Platform {
         }
     }
 
-    /// Abre a janela. `DisplayUnavailable` se não houver servidor gráfico.
+    /// Abre a janela. `DisplayUnavailable` se não houver servidor gráfico;
+    /// `DisplayLibraryMissing` se faltar a biblioteca dele (Linux).
     pub fn init(desc: &WindowDesc) -> Result<Platform, PlatformError> {
         let window = sys::window_create(desc)?;
         Ok(Platform::new(Some(window), desc.width, desc.height, u64::MAX))

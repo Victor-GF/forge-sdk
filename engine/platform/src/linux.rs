@@ -2,8 +2,9 @@
 //!
 //! A `libX11.so.6` é carregada em tempo de execução (`forja_os::library`), como o SDL faz: não
 //! precisa do pacote de desenvolvimento para compilar, e o mesmo binário roda em máquina sem
-//! X11 (aí `init` devolve `DisplayUnavailable` e o jogo pode usar o modo headless). No WSL, o
-//! WSLg fornece o servidor X (`DISPLAY=:0`) e a janela aparece no Windows.
+//! X11 (aí `init` devolve `DisplayLibraryMissing` sem a biblioteca ou `DisplayUnavailable` sem
+//! servidor, e o jogo pode usar o modo headless). Em sessão Wayland (padrão do Ubuntu), a janela
+//! roda pelo XWayland; no WSL, o WSLg faz o mesmo (`DISPLAY=:0`) e a janela aparece no Windows.
 //!
 //! As structs de evento abaixo reproduzem o layout de `Xlib.h` em 64 bits; os testes conferem
 //! os tamanhos.
@@ -144,6 +145,8 @@ const BUTTON_RELEASE: c_int = 5;
 const MOTION_NOTIFY: c_int = 6;
 const FOCUS_IN: c_int = 9;
 const FOCUS_OUT: c_int = 10;
+const UNMAP_NOTIFY: c_int = 18;
+const MAP_NOTIFY: c_int = 19;
 const CONFIGURE_NOTIFY: c_int = 22;
 const CLIENT_MESSAGE: c_int = 33;
 
@@ -219,7 +222,7 @@ struct Xlib {
 }
 
 fn symbol(lib: &Library, name: &str) -> Result<*mut c_void, PlatformError> {
-    lib.symbol(name).ok_or(PlatformError::DisplayUnavailable)
+    lib.symbol(name).ok_or(PlatformError::DisplayLibraryMissing)
 }
 
 /// Resolve todas as funções. Cada `transmute` converte o endereço exportado para a assinatura
@@ -266,6 +269,10 @@ pub(crate) struct Window {
     net_wm_name: Atom,
     utf8_string: Atom,
     focused: bool,
+    /// `false` enquanto minimizada: o gerenciador de janelas tira a janela da tela (ICCCM) sem
+    /// mudar o tamanho, então o 0x0 do contrato sai daqui.
+    mapped: bool,
+    /// Último tamanho do ConfigureNotify, mantido enquanto minimizada.
     width: u32,
     height: u32,
 }
@@ -276,7 +283,7 @@ pub(crate) fn window_create(desc: &WindowDesc) -> Result<Window, PlatformError> 
         return Err(PlatformError::TitleTooLong);
     }
     let Some(library) = Library::open(X11_LIBRARY) else {
-        return Err(PlatformError::DisplayUnavailable);
+        return Err(PlatformError::DisplayLibraryMissing);
     };
     let x = match load_xlib(&library) {
         Ok(x) => x,
@@ -326,6 +333,7 @@ pub(crate) fn window_create(desc: &WindowDesc) -> Result<Window, PlatformError> 
             net_wm_name,
             utf8_string,
             focused: true,
+            mapped: true,
             width: desc.width,
             height: desc.height,
         };
@@ -397,6 +405,8 @@ pub(crate) fn window_poll(w: &mut Window, input: &mut Input) -> WindowState {
                 MOTION_NOTIFY => input.mouse_move(ev.motion.x, ev.motion.y),
                 FOCUS_IN => w.focused = true,
                 FOCUS_OUT => w.focused = false,
+                MAP_NOTIFY => w.mapped = true,
+                UNMAP_NOTIFY => w.mapped = false,
                 CONFIGURE_NOTIFY => {
                     w.width = u32::try_from(ev.configure.width).unwrap_or(0);
                     w.height = u32::try_from(ev.configure.height).unwrap_or(0);
@@ -411,7 +421,8 @@ pub(crate) fn window_poll(w: &mut Window, input: &mut Input) -> WindowState {
             }
         }
     }
-    WindowState { closed, focused: w.focused, width: w.width, height: w.height }
+    let (width, height) = if w.mapped { (w.width, w.height) } else { (0, 0) };
+    WindowState { closed, focused: w.focused, width, height }
 }
 
 /// Converte o keysym do X11 para `Key` (códigos virtuais do Windows, ver `input.rs`).

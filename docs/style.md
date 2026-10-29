@@ -33,19 +33,26 @@ projeto.
 
 | | Windows | Linux |
 |---|---|---|
-| Alvo testado | `x86_64-pc-windows-gnu` | `x86_64-unknown-linux-gnu` (WSL2, Ubuntu) |
+| Alvo | `x86_64-pc-windows-gnu` | `x86_64-unknown-linux-gnu`, Ubuntu desktop nativo |
+| Testado em | Windows | WSL2 (Ubuntu + WSLg) e Xvfb; Ubuntu nativo pendente |
 | Memória (região, páginas) | `VirtualAlloc` | `mmap` |
 | Relógio e sleep | `QueryPerformanceCounter`, `Sleep` | `clock_gettime`, `nanosleep` |
 | Arquivos | Win32 (`CreateFileW`) | `open`/`write` |
 | Bibliotecas dinâmicas | `LoadLibraryW` | `dlopen` |
 | Erro fatal | filtro de exceções (SEH) | sinais + pilha alternativa |
 | Pilha e módulo | `RtlCaptureStackBackTrace` | unwinder da libgcc + `dladdr` |
-| Janela e input | Win32 | X11 (carregada em tempo de execução) |
+| Janela e input | Win32 | X11 (carregada em tempo de execução); em sessão Wayland, via XWayland |
 | Modo headless | sim | sim |
 
 Para adicionar uma plataforma, siga o roteiro no comentário de `forja_os::Os`: variante e
 `CURRENT`, backend `engine/os/src/<so>.rs` (os testes de contrato dizem se cumpre),
 dependências no `Cargo.toml`, backend de janela em `engine/platform` e esta tabela.
+
+O alvo final do Linux é o Ubuntu desktop nativo; o WSL2 é o ambiente de desenvolvimento. O
+Ubuntu usa Wayland por padrão (sem sessão Xorg no GNOME desde a 25.10), e a janela X11 roda
+pelo XWayland, que vem em toda instalação desktop, o mesmo caminho do WSLg. Um backend Wayland
+nativo (escala fracionada sem borrão, HDR) fica para depois, com o X11 de fallback: no GNOME o
+próprio app desenha a barra de título (`libdecor`), o que custa bem mais que o X11.
 
 ## Camada de SO
 
@@ -61,7 +68,8 @@ dependências no `Cargo.toml`, backend de janela em `engine/platform` e esta tab
   sistemas. Validação completa = Windows **e** WSL.
 - `forja_platform` segue o mesmo modelo para a janela: Win32 no Windows, X11 no Linux. A
   `libX11.so.6` é carregada em tempo de execução (`forja_os::library`), então não precisa do
-  pacote de desenvolvimento para compilar; sem servidor gráfico, `init` devolve
+  pacote de desenvolvimento para compilar. Em tempo de execução precisa do pacote `libx11-6`
+  (todo desktop tem): sem ele, `init` devolve `DisplayLibraryMissing`; sem servidor gráfico,
   `DisplayUnavailable`.
 - Modo `--headless N` do jogo (dt fixo, entrada roteirizada): depuração, profiling e máquinas
   sem servidor gráfico.
@@ -158,7 +166,7 @@ indexação (`clippy.toml`).
 
 ## Validação
 
-Depois de cada mudança, no Windows e no WSL:
+Depois de cada mudança, no Windows e no WSL (antes de uma versão, também no Ubuntu nativo):
 
 ```
 cargo test --workspace

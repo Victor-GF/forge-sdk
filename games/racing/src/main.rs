@@ -179,6 +179,12 @@ fn main() -> ExitCode {
                     log::error(format_args!("sem servidor gráfico (no Linux: X11/DISPLAY); rode com --headless N"));
                     return ExitCode::FAILURE;
                 }
+                Err(PlatformError::DisplayLibraryMissing) => {
+                    log::error(format_args!(
+                        "libX11.so.6 não encontrada (sudo apt install libx11-6); ou rode com --headless N"
+                    ));
+                    return ExitCode::FAILURE;
+                }
                 Err(e) => {
                     log::error(format_args!("falha ao criar janela: {e:?}"));
                     return ExitCode::FAILURE;
