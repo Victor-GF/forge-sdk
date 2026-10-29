@@ -16,23 +16,16 @@
 //! Pouca stack é usada, porque no stack overflow o handler roda com ~20 KB de reserva.
 
 use core::cell::UnsafeCell;
-use core::ffi::c_void;
 use core::fmt::{self, Write};
 use core::ptr::{null, null_mut};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use forja_core::text::TextBuf;
-use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_WRITE, HMODULE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_WRITE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_ALWAYS, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL, WriteFile,
 };
-use windows_sys::Win32::System::Diagnostics::Debug::{
-    EXCEPTION_POINTERS, RtlCaptureStackBackTrace, SetUnhandledExceptionFilter,
-};
-use windows_sys::Win32::System::LibraryLoader::{
-    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-    GetModuleFileNameW, GetModuleHandleExW,
-};
+use windows_sys::Win32::System::Diagnostics::Debug::{EXCEPTION_POINTERS, SetUnhandledExceptionFilter};
 use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::SystemInformation::{
     GetLocalTime, GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX,
@@ -43,6 +36,7 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::log::write_breadcrumbs;
 use crate::spin_lock::SpinLock;
+use crate::stack;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CrashConfig {
@@ -64,7 +58,6 @@ pub struct Section {
 
 pub const SECTIONS_MAX: usize = 16;
 pub const REPORT_CAPACITY: usize = 64 * 1024;
-const STACK_FRAMES_MAX: u32 = 62;
 const EXCEPTION_EXECUTE_HANDLER: i32 = 1;
 
 #[derive(Clone, Copy)]
@@ -307,43 +300,17 @@ fn write_report(reason: &str, details: fmt::Arguments, exception_address: Option
 fn write_stack(t: &mut TextBuf, exception_address: Option<usize>) {
     let _ = writeln!(t, "\n--- pilha (módulo+deslocamento; simbolize com tools/symbolize.sh) ---");
     if let Some(address) = exception_address {
-        let _ = t.write_str("exceção ");
-        write_address(t, address);
+        let _ = write!(t, "exceção 0x{address:016x} ");
+        stack::write_module_offset(t, address);
+        let _ = t.write_char('\n');
     }
-    let mut frames = [null_mut::<c_void>(); STACK_FRAMES_MAX as usize];
-    // SAFETY: `frames` tem espaço para `STACK_FRAMES_MAX` ponteiros.
-    let n = unsafe { RtlCaptureStackBackTrace(1, STACK_FRAMES_MAX, frames.as_mut_ptr(), null_mut()) };
-    for (i, f) in frames.iter().take(usize::from(n)).enumerate() {
-        let _ = write!(t, "#{i:02}     ");
-        write_address(t, *f as usize);
+    let mut frames = [0usize; stack::FRAMES_MAX];
+    let n = stack::capture(1, &mut frames);
+    for (i, f) in frames.iter().take(n).enumerate() {
+        let _ = write!(t, "#{i:02}     0x{f:016x} ");
+        stack::write_module_offset(t, *f);
+        let _ = t.write_char('\n');
     }
-}
-
-fn write_address(t: &mut TextBuf, address: usize) {
-    let _ = write!(t, "0x{address:016x}");
-    let mut module: HMODULE = null_mut();
-    // SAFETY: com FROM_ADDRESS o "nome" é um endereço qualquer; `module` é local.
-    let ok = unsafe {
-        GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            address as *const u16,
-            &mut module,
-        )
-    };
-    if ok != 0 && !module.is_null() {
-        let mut name = [0u16; 260];
-        // SAFETY: `name` tem 260 posições.
-        let n = unsafe { GetModuleFileNameW(module, name.as_mut_ptr(), 260) };
-        let path = name.get(..n as usize).unwrap_or(&[]);
-        let start = path.iter().rposition(|&c| c == u16::from(b'\\')).map_or(0, |i| i.saturating_add(1));
-        let file = path.get(start..).unwrap_or(&[]);
-        let _ = t.write_char(' ');
-        for c in char::decode_utf16(file.iter().copied()) {
-            let _ = t.write_char(c.unwrap_or('?'));
-        }
-        let _ = write!(t, "+0x{:x}", address.wrapping_sub(module as usize));
-    }
-    let _ = t.write_char('\n');
 }
 
 fn mib(bytes: u64) -> f64 {

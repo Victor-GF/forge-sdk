@@ -49,10 +49,17 @@ ele faz deve estar à vista.
 - **Cada thread tem a sua `ThreadMemory`**: arenas `persistent` (programa inteiro), `level`
   (zera ao trocar de fase/pista) e `frame` (zera todo frame). Arenas são `Send` mas nunca
   `Sync`: podem mudar de thread, nunca ser compartilhadas. O compilador garante.
-- **Malloc bloqueado.** O alocador global (`forja_mem::global`) só atende a inicialização da
-  std, num buffer fixo. Depois de `global::lock()`, qualquer `Vec`, `String`, `Box`, `format!`
-  (nosso ou de dependência) gera crash report e aborta.
-- **Containers da std não são usados** fora de testes. No lugar:
+- **Heap geral monitorado** (`forja_mem::global`, o `#[global_allocator]`), no modelo da Unreal
+  (FMalloc + LLM + Memory Insights). Atende só o que não controlamos (std, dependências):
+  - backend: heap do sistema (`HeapAlloc`/LFH), trocável sem mudar quem usa;
+  - contabilidade: bytes vivos, pico e alocações, por tag (`AllocTag`, por thread);
+  - política: `Startup` (aloca calado), `Report` (depois de `global::end_startup()`: cada ponto
+    de chamada que alocar vai para o log uma vez, com a pilha), `Forbid` (fatal; testes e CI);
+  - orçamento (`global::set_budget`): passar dele avisa no log;
+  - OOM do sistema e liberação com tamanho errado (heap corrompido) geram crash report;
+  - em debug, memória nova sai com `0xCD` e liberada com `0xDD`.
+  - A meta do jogo é **0 alocações por frame** no heap geral (contador no trace).
+- **Containers da std não são usados** no runtime da engine e do jogo. No lugar:
   - listas e tabelas: `arena.alloc_slice` (capacidade fixa decidida na criação)
   - texto: `TextBuf` sobre um buffer da stack ou da arena + `write!`
   - log: `log::info(format_args!(...))`
@@ -75,7 +82,8 @@ ele faz deve estar à vista.
 - Todo caminho que aborta de propósito chama `crash::fatal` antes (o `abort` do Windows pula
   os handlers de exceção).
 - Perfis com `panic = "abort"`: o hook grava o relatório e encerra; não há unwind.
-- Pilha simbolizada: `tools/symbolize.sh <relatório> <exe>` (addr2line, mesmo build).
+- Pilha simbolizada: `tools/symbolize.sh <relatório-ou-log> <exe>` (addr2line, mesmo build);
+  serve também para os avisos `heap geral: ... pilha: ...` do log.
 
 ## Usa / não usa
 

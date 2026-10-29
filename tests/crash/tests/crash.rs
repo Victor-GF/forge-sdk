@@ -49,16 +49,34 @@ fn arena_oom() {
 }
 
 #[test]
-fn allocation_with_locked_global() {
-    let o = run("locked");
-    check_common(&o, "alocação com o alocador global travado");
+fn allocation_with_forbidden_heap() {
+    let o = run("forbid");
+    check_common(&o, "alocação com o heap geral proibido");
     assert!(o.report.contains("pedido de 100 bytes"), "{}", o.report);
+    assert!(o.report.contains("política Forbid"), "{}", o.report);
 }
 
 #[test]
-fn global_allocator_exhausted() {
-    let o = run("exhausted");
-    check_common(&o, "alocador global esgotado");
+fn heap_out_of_memory() {
+    let o = run("heap_oom");
+    check_common(&o, "heap geral sem memória");
+    assert!(o.report.contains("o sistema recusou 70368744177664 bytes"), "{}", o.report);
+}
+
+#[test]
+fn heap_reports_each_call_site_once_without_crashing() {
+    let dir: PathBuf = std::env::temp_dir().join(format!("forja_crash_report_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let output = Command::new(env!("CARGO_BIN_EXE_crash_tests")).arg("report").arg(&dir).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    assert!(!dir.exists(), "não deveria haver crash report");
+    assert_eq!(stderr.matches("heap geral: alocação de").count(), 2, "{stderr}");
+    assert!(stderr.contains("heap geral: alocação de 100 bytes"), "{stderr}");
+    assert!(stderr.contains("heap geral: alocação de 2000 bytes"), "{stderr}");
+    assert!(stderr.contains("pilha: crash_tests.exe+0x"), "{stderr}");
+    assert!(stderr.contains("heap geral passou do orçamento"), "{stderr}");
+    assert!(stderr.contains("report: 2 pontos de chamada relatados"), "{stderr}");
 }
 
 #[test]

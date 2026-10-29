@@ -2,21 +2,22 @@
 //!
 //! crash_tests <mode> <dir>
 //!
-//! Modos: oom, locked, exhausted, panic, access, stack.
+//! Modos que crasham: oom, forbid, heap_oom, panic, access, stack.
+//! Modo que não crasha: report (aloca no heap geral depois da inicialização e sai com 0).
 
 use std::hint::black_box;
 use std::process::ExitCode;
 
 use forja_diag::crash::{self, CrashConfig};
 use forja_diag::log;
-use forja_mem::global::{self, GLOBAL_CAPACITY, GlobalAllocator};
+use forja_mem::global::{self, GlobalAllocator, HeapPolicy};
 use forja_mem::region::{MemoryRegion, ThreadMemoryDesc};
 
 #[global_allocator]
 static ALLOCATOR: GlobalAllocator = GlobalAllocator;
 
 fn main() -> ExitCode {
-    // Argumentos lidos antes de travar o alocador (a std aloca para eles).
+    // Inicialização: a std aloca para os argumentos (política Startup, sem relatório).
     let mut args = std::env::args();
     let _ = args.next();
     let mode = args.next().unwrap_or_default();
@@ -35,13 +36,12 @@ fn main() -> ExitCode {
     log::info(format_args!("crash_tests: modo '{mode}'"));
     crash::set_frame(42);
 
-    if mode == "exhausted" {
-        // Antes de travar: pede mais que o buffer do alocador global.
-        let v: Vec<u8> = Vec::with_capacity(black_box(GLOBAL_CAPACITY.saturating_mul(2)));
-        black_box(&v);
+    if mode == "heap_oom" {
+        // 64 TB: o heap do sistema recusa.
+        black_box(Vec::<u8>::with_capacity(black_box(1usize << 46)));
     }
 
-    global::lock();
+    global::end_startup();
 
     match mode.as_str() {
         "oom" => {
@@ -51,8 +51,22 @@ fn main() -> ExitCode {
                 memory.frame.oom_fatal()
             };
         }
-        "locked" => {
+        "forbid" => {
+            global::set_policy(HeapPolicy::Forbid);
             black_box(Vec::<u8>::with_capacity(black_box(100)));
+        }
+        "report" => {
+            global::set_budget(1000);
+            // Mesmo ponto de chamada 3 vezes: um relatório só. (`black_box` na contagem impede
+            // o compilador de desenrolar o loop em 3 chamadas, que seriam 3 pontos distintos.)
+            for _ in 0..black_box(3) {
+                allocate_small();
+            }
+            // Outro ponto de chamada, acima do orçamento: segundo relatório e aviso de orçamento.
+            black_box(Vec::<u8>::with_capacity(black_box(2000)));
+            let h = global::stats();
+            log::info(format_args!("report: {} pontos de chamada relatados", h.reported_sites));
+            return ExitCode::SUCCESS;
         }
         "panic" => trigger_panic(black_box(7)),
         "access" => {
@@ -69,6 +83,11 @@ fn main() -> ExitCode {
     }
     log::error(format_args!("modo '{mode}' não crashou"));
     ExitCode::from(3)
+}
+
+#[inline(never)]
+fn allocate_small() {
+    black_box(Vec::<u8>::with_capacity(black_box(100)));
 }
 
 #[allow(clippy::panic)]

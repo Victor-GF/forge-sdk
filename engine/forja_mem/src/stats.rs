@@ -147,10 +147,23 @@ pub(crate) fn crash_section(t: &mut TextBuf) {
         }
         let _ = t.write_char('\n');
     }
-    let g = global::stats();
+    let h = global::stats();
     let _ = writeln!(
         t,
-        "global:  {} de {} bytes, {} alocações, {} liberações, travado: {}",
-        g.used, g.capacity, g.allocations, g.frees, g.locked
+        "heap geral: {} bytes vivos (pico {}, orçamento {}), {} alocações, {} liberações, \
+         política {:?}, {} pontos de chamada relatados",
+        h.live_bytes, h.peak_bytes, h.budget, h.allocations, h.frees, h.policy, h.reported_sites
     );
+    for tag in global::AllocTag::ALL {
+        let s = global::tag_stats(tag);
+        if s.allocations > 0 {
+            let _ = writeln!(
+                t,
+                "  tag {:<12} {:>10} bytes vivos, {} alocações",
+                tag.name(),
+                s.live_bytes,
+                s.allocations
+            );
+        }
+    }
 }

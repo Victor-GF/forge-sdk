@@ -5,8 +5,9 @@
 //! Ao sair, grava `racing.trace.json` (abrir em https://ui.perfetto.dev).
 //!
 //! Memória: um único `VirtualAlloc` com o orçamento abaixo; a thread principal usa a sua
-//! `ThreadMemory` (persistent, level, frame). Depois da inicialização o alocador global é
-//! travado: qualquer `Vec`/`String`/`Box` gera crash report e aborta.
+//! `ThreadMemory` (persistent, level, frame). O heap geral (std/dependências) tem orçamento
+//! próprio e, depois da inicialização, cada ponto de chamada que alocar aparece no log com a
+//! pilha. A meta do jogo é zero alocações no heap geral por frame (contador no trace).
 
 use core::fmt::Write;
 use std::process::ExitCode;
@@ -35,6 +36,8 @@ const MAIN_THREAD_MEMORY: ThreadMemoryDesc =
 /// Só a thread principal por enquanto; sobra para as arenas de outras threads no futuro.
 const REGION_SIZE: usize = 64 * MB;
 const REGION_SIZE_MB: usize = REGION_SIZE / MB;
+/// Heap geral: só std e dependências. Hoje o jogo usa 0 bytes; o orçamento é o alarme.
+const HEAP_BUDGET: usize = MB;
 
 // ---------------------------------------------------------------- profiler
 
@@ -43,14 +46,16 @@ const ZONE_PLATFORM: Zone = Zone(1);
 const ZONE_UPDATE: Zone = Zone(2);
 const ZONE_WAIT: Zone = Zone(3);
 const COUNTER_FRAME_MEMORY: Counter = Counter(4);
-const COUNTER_GLOBAL_MEMORY: Counter = Counter(5);
-static PROFILER_NAMES: [&str; 6] = [
+const COUNTER_HEAP_LIVE: Counter = Counter(5);
+const COUNTER_HEAP_ALLOCATIONS: Counter = Counter(6);
+static PROFILER_NAMES: [&str; 7] = [
     "frame",
     "platform",
     "update",
     "wait",
-    "frame memory (bytes)",
-    "global memory (bytes)",
+    "frame arena (bytes)",
+    "heap live (bytes)",
+    "heap allocations (per frame)",
 ];
 
 /// ~30 min a 60 fps com 10 eventos por frame (16 MB da arena persistent).
@@ -132,6 +137,7 @@ impl FrameStats {
 
 fn main() -> ExitCode {
     crash::install(CrashConfig { app: "racing", version: env!("CARGO_PKG_VERSION"), dir: "crash" });
+    global::set_budget(HEAP_BUDGET);
 
     let Some(mut region) = MemoryRegion::reserve(REGION_SIZE) else {
         log::error(format_args!("sem memória: o SO recusou {REGION_SIZE_MB} MB"));
@@ -157,15 +163,17 @@ fn main() -> ExitCode {
         }
     };
 
-    let g = global::stats();
+    let h = global::stats();
     log::info(format_args!(
-        "inicialização: {} bytes em {} alocações globais (std); travando o alocador global",
-        g.used, g.allocations
+        "inicialização: {} bytes vivos no heap geral em {} alocações; a partir daqui cada \
+         ponto de chamada que alocar vai para o log",
+        h.live_bytes, h.allocations
     ));
-    global::lock();
+    global::end_startup();
 
     let mut car = Car { speed: 0.0 };
     let mut stats = FrameStats::EMPTY;
+    let mut heap_allocations_before = global::stats().allocations;
 
     loop {
         crash::set_frame(platform.frame_index);
@@ -190,7 +198,7 @@ fn main() -> ExitCode {
         platform.wait_frame(TARGET_FRAME_SECONDS);
         prof.end(ZONE_WAIT);
 
-        end_frame(&mut prof, &mut memory.frame);
+        end_frame(&mut prof, &mut memory.frame, &mut heap_allocations_before);
         prof.end(ZONE_FRAME);
     }
 
@@ -201,9 +209,13 @@ fn main() -> ExitCode {
 }
 
 /// Registra o uso de memória do frame e zera a arena do frame.
-fn end_frame(prof: &mut Profiler, frame_arena: &mut Arena) {
+fn end_frame(prof: &mut Profiler, frame_arena: &mut Arena, heap_allocations_before: &mut u64) {
+    let heap = global::stats();
+    let heap_allocations = heap.allocations.saturating_sub(*heap_allocations_before);
+    *heap_allocations_before = heap.allocations;
     prof.counter(COUNTER_FRAME_MEMORY, u32::try_from(frame_arena.used()).unwrap_or(u32::MAX));
-    prof.counter(COUNTER_GLOBAL_MEMORY, u32::try_from(global::stats().used).unwrap_or(u32::MAX));
+    prof.counter(COUNTER_HEAP_LIVE, u32::try_from(heap.live_bytes).unwrap_or(u32::MAX));
+    prof.counter(COUNTER_HEAP_ALLOCATIONS, u32::try_from(heap_allocations).unwrap_or(u32::MAX));
     frame_arena.reset();
 }
 
@@ -256,10 +268,11 @@ fn log_memory(memory: &ThreadMemory) {
             s.failures
         ));
     }
-    let g = global::stats();
+    let h = global::stats();
     log::info(format_args!(
-        "global: {} / {} bytes, {} alocações, {} liberações (travado: {})",
-        g.used, g.capacity, g.allocations, g.frees, g.locked
+        "heap geral: {} bytes vivos (pico {}, orçamento {}), {} alocações, {} liberações, \
+         {} pontos de chamada relatados",
+        h.live_bytes, h.peak_bytes, h.budget, h.allocations, h.frees, h.reported_sites
     ));
 }
 
