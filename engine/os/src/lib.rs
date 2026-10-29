@@ -15,8 +15,43 @@
 //! Nada aqui aloca no heap do Rust: tudo pode ser chamado com o heap geral em
 //! `HeapPolicy::Forbid`. (O carregador de bibliotecas do SO usa memória própria.)
 
+// ---------------------------------------------------------------- plataformas suportadas
+//
+// **Fonte única da lista de plataformas da Forja.** Todo crate da engine depende deste, então
+// um SO fora da lista para aqui, com a mensagem abaixo, antes de qualquer outro erro.
+//
+// Para adicionar uma plataforma (ex.: macOS):
+// 1. aqui: variante em `Os`, `CURRENT`, condição do `compile_error!` e `path` do `mod sys`;
+// 2. `engine/os/src/<so>.rs`: todas as funções de `sys` (os testes de contrato dizem se cumpre);
+// 3. `engine/os/Cargo.toml`: dependências daquele SO;
+// 4. `engine/platform`: `path` do backend de janela e `src/<so>.rs`;
+// 5. a tabela "Plataformas suportadas" em `docs/style.md`.
+
 #[cfg(not(any(windows, target_os = "linux")))]
-compile_error!("forja_os: plataforma não suportada (suportadas: Windows e Linux)");
+compile_error!("Forja: plataforma não suportada. Suportadas: Windows e Linux (ver forja_os::Os).");
+
+/// Sistemas operacionais suportados pela Forja.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Windows,
+    Linux,
+}
+
+impl Os {
+    pub fn name(self) -> &'static str {
+        match self {
+            Os::Windows => "windows",
+            Os::Linux => "linux",
+        }
+    }
+}
+
+/// O sistema para o qual este build foi compilado.
+#[cfg(windows)]
+pub const CURRENT: Os = Os::Windows;
+/// O sistema para o qual este build foi compilado.
+#[cfg(target_os = "linux")]
+pub const CURRENT: Os = Os::Linux;
 
 #[cfg_attr(windows, path = "windows.rs")]
 #[cfg_attr(target_os = "linux", path = "linux.rs")]

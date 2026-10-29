@@ -224,6 +224,7 @@ fn write_report(reason: &str, details: fmt::Arguments, instruction_address: Opti
 
     let _ = writeln!(t, "=== Forja: relatório de crash ===");
     let _ = writeln!(t, "jogo:    {} {}", state.config.app, state.config.version);
+    let _ = writeln!(t, "sistema: {}", forja_os::CURRENT.name());
     let _ = writeln!(
         t,
         "data:    {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",

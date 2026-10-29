@@ -1,8 +1,9 @@
 //! Plataforma: janela, input e ritmo de frame.
 //!
 //! **Este arquivo é o contrato.** A janela tem um backend por SO, escolhido no build:
-//! `windows.rs` (Win32) e `linux.rs` (X11, carregada em tempo de execução). Outros sistemas
-//! ainda não são suportados (erro de compilação). Relógio e sleep vêm do `forja_os`.
+//! `windows.rs` (Win32) e `linux.rs` (X11, carregada em tempo de execução). A lista de
+//! plataformas suportadas (e o erro para as outras) fica em `forja_os::Os`. Relógio e sleep
+//! vêm do `forja_os`.
 //!
 //! O jogo é dono do loop: chama `Platform::poll` uma vez por frame e decide o resto. Dois modos:
 //! - `Platform::init`: com janela; o input vem do SO.
@@ -13,9 +14,7 @@
 
 pub mod input;
 
-#[cfg(not(any(windows, target_os = "linux")))]
-compile_error!("forja_platform: plataforma não suportada (suportadas: Windows e Linux/X11)");
-
+// Uma variante de `forja_os::Os` = um backend aqui. SO fora da lista já falha no forja_os.
 #[cfg_attr(windows, path = "windows.rs")]
 #[cfg_attr(target_os = "linux", path = "linux.rs")]
 mod sys;

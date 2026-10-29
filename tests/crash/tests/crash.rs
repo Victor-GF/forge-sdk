@@ -35,6 +35,7 @@ fn check_common(o: &Outcome, reason: &str) {
     assert!(o.report.contains(&format!("motivo:  {reason}\n")), "{}", o.report);
     assert!(o.report.contains("jogo:    crash_tests"), "{}", o.report);
     assert!(o.report.contains("frame:   42"), "{}", o.report);
+    assert!(o.report.contains(&format!("sistema: {}\n", std::env::consts::OS)), "{}", o.report);
     assert!(o.report.contains(MODULE), "pilha sem o módulo:\n{}", o.report);
     assert!(o.report.contains("--- memória do sistema ---"), "{}", o.report);
     assert!(o.report.contains("--- memória da forja ---"), "{}", o.report);

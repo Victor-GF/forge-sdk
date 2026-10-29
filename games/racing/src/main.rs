@@ -189,9 +189,11 @@ fn main() -> ExitCode {
 
     let h = global::stats();
     log::info(format_args!(
-        "inicialização: {} bytes vivos no heap geral em {} alocações; a partir daqui cada \
+        "inicialização ({}): {} bytes vivos no heap geral em {} alocações; a partir daqui cada \
          ponto de chamada que alocar vai para o log",
-        h.live_bytes, h.allocations
+        forja_os::CURRENT.name(),
+        h.live_bytes,
+        h.allocations
     ));
     global::end_startup();
 

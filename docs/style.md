@@ -25,6 +25,28 @@ ele faz deve estar à vista.
   nome curto (`engine/mem`) e crates com prefixo (`forja_mem`): o prefixo evita colisão com o
   `core` do Rust e com crates externos.
 
+## Plataformas suportadas
+
+A lista oficial é o `enum Os` em `engine/os/src/lib.rs` (`forja_os::CURRENT` diz para qual o
+build foi compilado). Um SO fora dela para no `compile_error!` do `forja_os`, o único do
+projeto.
+
+| | Windows | Linux |
+|---|---|---|
+| Alvo testado | `x86_64-pc-windows-gnu` | `x86_64-unknown-linux-gnu` (WSL2, Ubuntu) |
+| Memória (região, páginas) | `VirtualAlloc` | `mmap` |
+| Relógio e sleep | `QueryPerformanceCounter`, `Sleep` | `clock_gettime`, `nanosleep` |
+| Arquivos | Win32 (`CreateFileW`) | `open`/`write` |
+| Bibliotecas dinâmicas | `LoadLibraryW` | `dlopen` |
+| Erro fatal | filtro de exceções (SEH) | sinais + pilha alternativa |
+| Pilha e módulo | `RtlCaptureStackBackTrace` | unwinder da libgcc + `dladdr` |
+| Janela e input | Win32 | X11 (carregada em tempo de execução) |
+| Modo headless | sim | sim |
+
+Para adicionar uma plataforma, siga o roteiro no comentário de `forja_os::Os`: variante e
+`CURRENT`, backend `engine/os/src/<so>.rs` (os testes de contrato dizem se cumpre),
+dependências no `Cargo.toml`, backend de janela em `engine/platform` e esta tabela.
+
 ## Camada de SO
 
 - **Só o `forja_os` fala com o sistema operacional** (e o backend de janela do
@@ -40,7 +62,7 @@ ele faz deve estar à vista.
 - `forja_platform` segue o mesmo modelo para a janela: Win32 no Windows, X11 no Linux. A
   `libX11.so.6` é carregada em tempo de execução (`forja_os::library`), então não precisa do
   pacote de desenvolvimento para compilar; sem servidor gráfico, `init` devolve
-  `DisplayUnavailable`. Outros sistemas: erro de compilação.
+  `DisplayUnavailable`.
 - Modo `--headless N` do jogo (dt fixo, entrada roteirizada): depuração, profiling e máquinas
   sem servidor gráfico.
 

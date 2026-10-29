@@ -11,6 +11,13 @@ use forja_os::library::Library;
 use forja_os::{memory, process, stack, time};
 
 #[test]
+fn current_os_matches_the_build_target() {
+    let expected = if cfg!(windows) { forja_os::Os::Windows } else { forja_os::Os::Linux };
+    assert_eq!(forja_os::CURRENT, expected);
+    assert_eq!(forja_os::CURRENT.name(), std::env::consts::OS);
+}
+
+#[test]
 fn page_info_is_consistent() {
     let p = memory::page_info();
     assert!(p.page_size.is_power_of_two() && p.page_size >= 4096, "{p:?}");
