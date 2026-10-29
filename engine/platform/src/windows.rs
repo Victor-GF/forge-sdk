@@ -130,7 +130,7 @@ pub(crate) fn window_set_title(w: &Window, title: &str) {
     unsafe { SetWindowTextW(w.hwnd, t.as_ptr()) };
 }
 
-pub(crate) fn window_poll(w: &Window, input: &mut Input) -> WindowState {
+pub(crate) fn window_poll(w: &mut Window, input: &mut Input) -> WindowState {
     let mut closed = false;
     // SAFETY: MSG é uma struct C só com inteiros e ponteiros; zero é um valor válido.
     let mut msg: MSG = unsafe { core::mem::zeroed() };

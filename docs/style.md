@@ -37,8 +37,12 @@ ele faz deve estar à vista.
   Windows.
 - Os **testes de contrato** (`engine/os/tests/contract.rs`) e os crash tests rodam nos dois
   sistemas. Validação completa = Windows **e** WSL.
-- `forja_platform` segue o mesmo modelo para a janela. Linux ainda não tem janela; o jogo roda
-  com `--headless N` (dt fixo, entrada roteirizada) para depuração e profiling.
+- `forja_platform` segue o mesmo modelo para a janela: Win32 no Windows, X11 no Linux. A
+  `libX11.so.6` é carregada em tempo de execução (`forja_os::library`), então não precisa do
+  pacote de desenvolvimento para compilar; sem servidor gráfico, `init` devolve
+  `DisplayUnavailable`. Outros sistemas: erro de compilação.
+- Modo `--headless N` do jogo (dt fixo, entrada roteirizada): depuração, profiling e máquinas
+  sem servidor gráfico.
 
 ## Desenvolvimento no WSL
 

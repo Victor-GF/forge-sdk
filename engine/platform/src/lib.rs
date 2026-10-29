@@ -1,17 +1,20 @@
 //! Plataforma: janela, input e ritmo de frame.
 //!
-//! **Este arquivo é o contrato.** A janela tem um backend por SO (`windows.rs`: Win32;
-//! `linux.rs`: ainda sem janela, `init` devolve `WindowUnsupported`). Relógio e sleep vêm do
-//! `forja_os`.
+//! **Este arquivo é o contrato.** A janela tem um backend por SO, escolhido no build:
+//! `windows.rs` (Win32) e `linux.rs` (X11, carregada em tempo de execução). Outros sistemas
+//! ainda não são suportados (erro de compilação). Relógio e sleep vêm do `forja_os`.
 //!
 //! O jogo é dono do loop: chama `Platform::poll` uma vez por frame e decide o resto. Dois modos:
 //! - `Platform::init`: com janela; o input vem do SO.
-//! - `Platform::headless(max_frames)`: sem janela, em qualquer SO; `poll` devolve `false`
-//!   depois de `max_frames` frames. Para testes, depuração e profiling da simulação.
+//! - `Platform::headless(max_frames)`: sem janela; `poll` devolve `false` depois de
+//!   `max_frames` frames. Para testes, depuração, profiling e máquinas sem servidor gráfico.
 //!
 //! Não aloca. Nenhum estado global.
 
 pub mod input;
+
+#[cfg(not(any(windows, target_os = "linux")))]
+compile_error!("forja_platform: plataforma não suportada (suportadas: Windows e Linux/X11)");
 
 #[cfg_attr(windows, path = "windows.rs")]
 #[cfg_attr(target_os = "linux", path = "linux.rs")]
@@ -34,8 +37,9 @@ pub enum PlatformError {
     TitleTooLong,
     RegisterClass,
     CreateWindow,
-    /// Este SO ainda não tem backend de janela (use `Platform::headless`).
-    WindowUnsupported,
+    /// Sem servidor gráfico: no Linux, `libX11.so.6` ausente ou `DISPLAY` sem servidor X.
+    /// Use `Platform::headless`.
+    DisplayUnavailable,
 }
 
 /// Tamanho máximo de título (em unidades UTF-16, com o 0 final).
@@ -95,7 +99,7 @@ impl Platform {
         }
     }
 
-    /// Abre a janela. `WindowUnsupported` em SO sem backend de janela.
+    /// Abre a janela. `DisplayUnavailable` se não houver servidor gráfico.
     pub fn init(desc: &WindowDesc) -> Result<Platform, PlatformError> {
         let window = sys::window_create(desc)?;
         Ok(Platform::new(Some(window), desc.width, desc.height, u64::MAX))
@@ -129,7 +133,7 @@ impl Platform {
     pub fn poll(&mut self) -> bool {
         self.input.begin_frame();
 
-        match &self.window {
+        match &mut self.window {
             Some(w) => {
                 let s = sys::window_poll(w, &mut self.input);
                 if s.closed {

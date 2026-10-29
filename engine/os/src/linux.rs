@@ -18,6 +18,7 @@ use forja_core::text::TextBuf;
 
 use crate::fatal::{FatalEvent, FatalKind, MemoryAccess};
 use crate::file::PATH_MAX;
+use crate::library::NAME_MAX;
 use crate::memory::PageInfo;
 use crate::process::{ProcessMemory, SystemMemory};
 use crate::time::UtcTime;
@@ -351,6 +352,31 @@ extern "C" fn signal_handler(sig: c_int, info: *mut libc::siginfo_t, ctx: *mut c
 pub(crate) fn terminate(exit_code: u32) -> ! {
     // SAFETY: encerra o processo sem rodar nada em espaço de usuário.
     unsafe { libc::_exit(c_int::try_from(exit_code & 0xFF).unwrap_or(1)) }
+}
+
+// ---------------------------------------------------------------- bibliotecas dinâmicas
+
+pub(crate) type LibraryHandle = *mut c_void;
+
+pub(crate) fn library_open(name: &str) -> Option<LibraryHandle> {
+    let mut buf = [0u8; NAME_MAX + 1];
+    let n = c_path(name, &mut buf)?;
+    // SAFETY: `n` termina em 0 e vive durante a chamada.
+    let h = unsafe { libc::dlopen(n.as_ptr().cast::<c_char>(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+    if h.is_null() { None } else { Some(h) }
+}
+
+pub(crate) fn library_symbol(h: &LibraryHandle, name: &str) -> Option<*mut c_void> {
+    let mut buf = [0u8; NAME_MAX + 1];
+    let n = c_path(name, &mut buf)?;
+    // SAFETY: `h` veio de dlopen; `n` termina em 0.
+    let p = unsafe { libc::dlsym(*h, n.as_ptr().cast::<c_char>()) };
+    if p.is_null() { None } else { Some(p) }
+}
+
+pub(crate) fn library_close(h: LibraryHandle) {
+    // SAFETY: `h` veio de dlopen e é fechado uma vez (a `Library` foi consumida).
+    unsafe { libc::dlclose(h) };
 }
 
 // ---------------------------------------------------------------- processo

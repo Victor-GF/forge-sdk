@@ -12,7 +12,8 @@
 //! - só este crate (e o backend de janela do `forja_platform`) depende de `windows-sys`/`libc`;
 //! - os testes de contrato (`tests/contract.rs`) rodam iguais em todos os sistemas.
 //!
-//! Nada aqui aloca: tudo pode ser chamado com o heap geral em `HeapPolicy::Forbid`.
+//! Nada aqui aloca no heap do Rust: tudo pode ser chamado com o heap geral em
+//! `HeapPolicy::Forbid`. (O carregador de bibliotecas do SO usa memória própria.)
 
 #[cfg(not(any(windows, target_os = "linux")))]
 compile_error!("forja_os: plataforma não suportada (suportadas: Windows e Linux)");
@@ -237,6 +238,54 @@ pub mod fatal {
     /// de `exit_code` chegam a quem esperava o processo.
     pub fn terminate(exit_code: u32) -> ! {
         sys::terminate(exit_code)
+    }
+}
+
+// ---------------------------------------------------------------- bibliotecas dinâmicas
+
+pub mod library {
+    use core::ffi::c_void;
+
+    use crate::sys;
+
+    /// Maior nome aceito (de biblioteca ou de símbolo), em bytes UTF-8.
+    pub const NAME_MAX: usize = 255;
+
+    /// Biblioteca dinâmica carregada (`.dll` no Windows, `.so` no Linux). Só existe carregada:
+    /// `open` devolve `None` se falhar e `close` consome o valor.
+    ///
+    /// O carregador do SO usa memória própria (não o heap geral do Rust).
+    pub struct Library {
+        handle: sys::LibraryHandle,
+    }
+
+    fn name_ok(name: &str) -> bool {
+        !name.is_empty() && name.len() <= NAME_MAX && !name.contains('\0')
+    }
+
+    impl Library {
+        /// Carrega pelo nome do arquivo (`"kernel32.dll"`, `"libX11.so.6"`), procurando nos
+        /// caminhos padrão do SO. `None` se não existir ou não puder ser carregada.
+        pub fn open(name: &str) -> Option<Library> {
+            if !name_ok(name) {
+                return None;
+            }
+            sys::library_open(name).map(|handle| Library { handle })
+        }
+
+        /// Endereço do símbolo exportado `name`, ou `None`. Quem chama converte para o tipo de
+        /// função certo (`transmute`), e é responsável por a assinatura bater com a da biblioteca.
+        pub fn symbol(&self, name: &str) -> Option<*mut c_void> {
+            if !name_ok(name) {
+                return None;
+            }
+            sys::library_symbol(&self.handle, name)
+        }
+
+        /// Descarrega. Ponteiros obtidos com `symbol` deixam de valer.
+        pub fn close(self) {
+            sys::library_close(self.handle);
+        }
     }
 }
 

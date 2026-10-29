@@ -4,9 +4,11 @@
 //! Controles: W acelera, S freia, Esc sai.
 //! Ao sair, grava `racing.trace.json` (abrir em https://ui.perfetto.dev).
 //!
-//! `racing --headless N`: sem janela (em qualquer SO), roda N frames o mais rápido possível com
-//! dt fixo e entrada roteirizada. Serve para testes, depuração (gdb) e profiling (cachegrind,
-//! perf). No Linux, que ainda não tem janela, é o único modo.
+//! Janela: Win32 no Windows, X11 no Linux (no WSL, aparece no Windows pelo WSLg).
+//!
+//! `racing --headless N`: sem janela, roda N frames o mais rápido possível com dt fixo e
+//! entrada roteirizada. Serve para testes, depuração (gdb), profiling (cachegrind, perf) e
+//! máquinas sem servidor gráfico.
 //!
 //! Memória: uma única reserva ao SO com o orçamento abaixo; a thread principal usa a sua
 //! `ThreadMemory` (persistent, level, frame). O heap geral (std/dependências) tem orçamento
@@ -173,8 +175,8 @@ fn main() -> ExitCode {
             let desc = WindowDesc { title: "Forja racing", width: 1280, height: 720 };
             match Platform::init(&desc) {
                 Ok(p) => p,
-                Err(PlatformError::WindowUnsupported) => {
-                    log::error(format_args!("este SO ainda não tem janela; rode com --headless N"));
+                Err(PlatformError::DisplayUnavailable) => {
+                    log::error(format_args!("sem servidor gráfico (no Linux: X11/DISPLAY); rode com --headless N"));
                     return ExitCode::FAILURE;
                 }
                 Err(e) => {

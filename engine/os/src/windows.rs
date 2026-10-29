@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use forja_core::text::TextBuf;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ALREADY_EXISTS, GENERIC_WRITE, GetLastError, HANDLE, HMODULE,
+    CloseHandle, ERROR_ALREADY_EXISTS, FreeLibrary, GENERIC_WRITE, GetLastError, HANDLE, HMODULE,
     INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
@@ -19,7 +19,7 @@ use windows_sys::Win32::System::Diagnostics::Debug::{
 };
 use windows_sys::Win32::System::LibraryLoader::{
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-    GetModuleFileNameW, GetModuleHandleExW,
+    GetModuleFileNameW, GetModuleHandleExW, GetProcAddress, LoadLibraryW,
 };
 use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc};
 use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
@@ -33,6 +33,7 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::fatal::{FatalEvent, FatalKind, MemoryAccess};
 use crate::file::PATH_MAX;
+use crate::library::NAME_MAX;
 use crate::memory::PageInfo;
 use crate::process::{ProcessMemory, SystemMemory};
 use crate::stack::FRAMES_MAX;
@@ -291,6 +292,34 @@ pub(crate) fn terminate(exit_code: u32) -> ! {
         // TerminateProcess no próprio processo não volta; o loop só satisfaz o tipo `!`.
         sleep_ms(1000);
     }
+}
+
+// ---------------------------------------------------------------- bibliotecas dinâmicas
+
+pub(crate) type LibraryHandle = HMODULE;
+
+pub(crate) fn library_open(name: &str) -> Option<LibraryHandle> {
+    let mut buf = [0u16; NAME_MAX + 1];
+    let n = utf16_into(name, &mut buf)?;
+    // SAFETY: `n` termina em 0 e vive durante a chamada.
+    let h = unsafe { LoadLibraryW(n.as_ptr()) };
+    if h.is_null() { None } else { Some(h) }
+}
+
+pub(crate) fn library_symbol(h: &LibraryHandle, name: &str) -> Option<*mut c_void> {
+    // GetProcAddress recebe o nome em ANSI terminado em 0.
+    let mut buf = [0u8; NAME_MAX + 1];
+    let len = name.len();
+    buf.get_mut(..len)?.copy_from_slice(name.as_bytes());
+    *buf.get_mut(len)? = 0;
+    // SAFETY: `h` veio de LoadLibraryW; `buf` termina em 0.
+    let f = unsafe { GetProcAddress(*h, buf.as_ptr()) };
+    f.map(|f| f as *const () as *mut c_void)
+}
+
+pub(crate) fn library_close(h: LibraryHandle) {
+    // SAFETY: `h` veio de LoadLibraryW e é liberado uma vez (a `Library` foi consumida).
+    unsafe { FreeLibrary(h) };
 }
 
 // ---------------------------------------------------------------- processo

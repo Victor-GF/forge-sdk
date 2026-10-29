@@ -7,6 +7,7 @@
 
 use forja_core::text::TextBuf;
 use forja_os::file::{self, FileWriter, PATH_MAX};
+use forja_os::library::Library;
 use forja_os::{memory, process, stack, time};
 
 #[test]
@@ -95,6 +96,22 @@ fn stack_capture_resolves_to_this_test_binary() {
     stack::write_module_offset(&mut t, frames[0]);
     assert!(t.as_str().starts_with("contract"), "{}", t.as_str());
     assert!(t.as_str().contains("+0x"), "{}", t.as_str());
+}
+
+#[test]
+fn library_loads_and_calls_a_system_function() {
+    // A mesma pergunta ("qual é o id do processo?") feita direto à biblioteca do sistema.
+    let (lib_name, fn_name) =
+        if cfg!(windows) { ("kernel32.dll", "GetCurrentProcessId") } else { ("libc.so.6", "getpid") };
+    let lib = Library::open(lib_name).unwrap();
+    let p = lib.symbol(fn_name).unwrap();
+    let get_pid: extern "C" fn() -> u32 = unsafe { core::mem::transmute(p) };
+    assert_eq!(get_pid(), std::process::id());
+    assert!(lib.symbol("forja_simbolo_que_nao_existe").is_none());
+    lib.close();
+
+    assert!(Library::open("forja_biblioteca_que_nao_existe").is_none());
+    assert!(Library::open("").is_none());
 }
 
 #[test]
