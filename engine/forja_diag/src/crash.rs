@@ -1,42 +1,31 @@
 //! Crash report.
 //!
 //! Entradas:
-//! - `crash::fatal(reason, details)`: erro fatal decidido pelo código (OOM de arena, alocador
-//!   travado...). Grava o relatório e aborta.
+//! - `crash::fatal(reason, details)`: erro fatal decidido pelo código (OOM de arena, heap
+//!   proibido...). Grava o relatório e aborta.
 //! - panic: o hook instalado por `crash::install` grava e aborta antes de a std alocar o
 //!   payload do unwind.
-//! - exceções do SO (access violation, stack overflow, instrução ilegal...): filtro de
-//!   exceção não tratada.
+//! - erros do SO (access violation, stack overflow, instrução ilegal...): handler de erro
+//!   fatal do `forja_os` (exceções no Windows, sinais no Linux).
 //!
-//! O `abort()` do Rust no Windows usa *fast fail*, que pula os filtros de exceção; por isso todo
+//! `abort()` não passa pelo handler de erro fatal (no Windows usa *fast fail*); por isso todo
 //! caminho que aborta de propósito passa por `crash::fatal` antes.
 //!
-//! O relatório é montado num buffer estático (`REPORT_CAPACITY`) e gravado via Win32:
-//! nada é alocado, então funciona sem memória livre e com o alocador global travado.
-//! Pouca stack é usada, porque no stack overflow o handler roda com ~20 KB de reserva.
+//! O relatório é montado num buffer estático (`REPORT_CAPACITY`) e gravado pelo `forja_os`:
+//! nada é alocado, então funciona sem memória livre e com o heap geral proibido.
+//! Pouca stack é usada, porque no stack overflow o handler roda numa reserva pequena.
 
 use core::cell::UnsafeCell;
 use core::fmt::{self, Write};
-use core::ptr::{null, null_mut};
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use forja_core::text::TextBuf;
-use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_WRITE, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::Storage::FileSystem::{
-    CREATE_ALWAYS, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL, WriteFile,
-};
-use windows_sys::Win32::System::Diagnostics::Debug::{EXCEPTION_POINTERS, SetUnhandledExceptionFilter};
-use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
-use windows_sys::Win32::System::SystemInformation::{
-    GetLocalTime, GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX,
-};
-use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentThreadId, Sleep, TerminateProcess,
-};
+use forja_os::fatal::{self, FatalEvent, FatalKind, MemoryAccess};
+use forja_os::file::{self, FileWriter};
+use forja_os::{process, stack, time};
 
 use crate::log::write_breadcrumbs;
 use crate::spin_lock::SpinLock;
-use crate::stack;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CrashConfig {
@@ -58,7 +47,8 @@ pub struct Section {
 
 pub const SECTIONS_MAX: usize = 16;
 pub const REPORT_CAPACITY: usize = 64 * 1024;
-const EXCEPTION_EXECUTE_HANDLER: i32 = 1;
+/// Código de saída quando um crash acontece dentro do próprio relatório.
+const NESTED_CRASH_EXIT_CODE: u32 = 0xDEAD;
 
 #[derive(Clone, Copy)]
 struct State {
@@ -90,26 +80,23 @@ struct ReportBuf(UnsafeCell<[u8; REPORT_CAPACITY]>);
 unsafe impl Sync for ReportBuf {}
 
 static REPORT: ReportBuf = ReportBuf(UnsafeCell::new([0; REPORT_CAPACITY]));
-static START_MS: AtomicU64 = AtomicU64::new(0);
+static START_TICKS: AtomicU64 = AtomicU64::new(0);
 static FRAME: AtomicU64 = AtomicU64::new(0);
 /// Thread que está escrevendo o relatório (0 = nenhuma).
-static CRASH_THREAD: AtomicU32 = AtomicU32::new(0);
+static CRASH_THREAD: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------- API
 
-/// Instala o hook de panic e o filtro de exceções. Chame no início do `main`, antes de
-/// travar o alocador global.
+/// Instala o hook de panic e o handler de erro fatal do SO. Chame no início do `main`, antes
+/// de `global::end_startup()`.
 pub fn install(config: CrashConfig) {
     if SHARED.lock.try_lock(u32::MAX) {
         // SAFETY: lock pego.
         unsafe { (*SHARED.state.get()).config = config };
         SHARED.lock.unlock();
     }
-    // SAFETY: chamadas sem ponteiros (o filtro é uma função estática).
-    unsafe {
-        START_MS.store(GetTickCount64(), Ordering::Relaxed);
-        SetUnhandledExceptionFilter(Some(exception_filter));
-    }
+    START_TICKS.store(time::ticks(), Ordering::Relaxed);
+    fatal::install(on_fatal);
     // `panic_hook` é uma função (tamanho zero): o Box não aloca.
     std::panic::set_hook(Box::new(panic_hook));
 }
@@ -159,47 +146,41 @@ fn panic_hook(info: &std::panic::PanicHookInfo) {
     std::process::abort()
 }
 
-unsafe extern "system" fn exception_filter(info: *const EXCEPTION_POINTERS) -> i32 {
-    // SAFETY: o SO passa ponteiros válidos (checados contra nulo).
-    let record = unsafe { info.as_ref().and_then(|i| i.ExceptionRecord.as_ref()) };
-    let Some(r) = record else {
-        write_report("exceção", format_args!("sem registro de exceção"), None);
-        return EXCEPTION_EXECUTE_HANDLER;
-    };
-    let code = r.ExceptionCode as u32;
-    let address = r.ExceptionAddress as usize;
-    let p0 = r.ExceptionInformation.first().copied().unwrap_or(0);
-    let p1 = r.ExceptionInformation.get(1).copied().unwrap_or(0);
-    let name = exception_name(code);
-    if code == 0xC000_0005 {
-        let action = match p0 {
-            0 => "ler",
-            1 => "escrever",
-            8 => "executar",
-            _ => "acessar",
-        };
-        write_report(
-            name,
-            format_args!("código 0x{code:08X}: tentou {action} o endereço 0x{p1:016x}"),
-            Some(address),
-        );
-    } else {
-        write_report(name, format_args!("código 0x{code:08X}"), Some(address));
+fn fatal_reason(kind: FatalKind) -> &'static str {
+    match kind {
+        FatalKind::AccessViolation { .. } => "access violation",
+        FatalKind::StackOverflow => "stack overflow",
+        FatalKind::IllegalInstruction => "instrução ilegal",
+        FatalKind::DivideByZero => "divisão inteira por zero",
+        FatalKind::IntegerOverflow => "overflow inteiro",
+        FatalKind::BusError => "erro de barramento/página",
+        FatalKind::Breakpoint => "breakpoint",
+        FatalKind::Other => "erro fatal do SO",
     }
-    EXCEPTION_EXECUTE_HANDLER
 }
 
-fn exception_name(code: u32) -> &'static str {
-    match code {
-        0xC000_0005 => "access violation",
-        0xC000_00FD => "stack overflow",
-        0xC000_001D => "instrução ilegal",
-        0xC000_0094 => "divisão inteira por zero",
-        0xC000_0095 => "overflow inteiro",
-        0xC000_008C => "índice de array fora dos limites",
-        0xC000_0006 => "erro de página (I/O)",
-        0x8000_0003 => "breakpoint",
-        _ => "exceção do SO",
+fn access_verb(access: MemoryAccess) -> &'static str {
+    match access {
+        MemoryAccess::Read => "ler",
+        MemoryAccess::Write => "escrever",
+        MemoryAccess::Execute => "executar",
+        MemoryAccess::Unknown => "acessar",
+    }
+}
+
+fn on_fatal(e: &FatalEvent) {
+    let reason = fatal_reason(e.kind);
+    match e.kind {
+        FatalKind::AccessViolation { address, access } => write_report(
+            reason,
+            format_args!(
+                "código do SO 0x{:08X}: tentou {} o endereço 0x{address:016x}",
+                e.os_code,
+                access_verb(access)
+            ),
+            Some(e.instruction_address),
+        ),
+        _ => write_report(reason, format_args!("código do SO 0x{:08X}", e.os_code), Some(e.instruction_address)),
     }
 }
 
@@ -208,18 +189,12 @@ fn exception_name(code: u32) -> &'static str {
 /// Garante que só uma thread escreve o relatório. Crash dentro do crash (mesma thread)
 /// encerra na hora; outras threads esperam o processo acabar.
 fn enter_crash() -> bool {
-    // SAFETY: chamada sem ponteiros.
-    let me = unsafe { GetCurrentThreadId() };
+    let me = process::thread_id();
     match CRASH_THREAD.compare_exchange(0, me, Ordering::AcqRel, Ordering::Acquire) {
         Ok(_) => true,
-        Err(owner) if owner == me => {
-            // SAFETY: encerra o próprio processo.
-            unsafe { TerminateProcess(GetCurrentProcess(), 0xDEAD) };
-            false
-        }
+        Err(owner) if owner == me => fatal::terminate(NESTED_CRASH_EXIT_CODE),
         Err(_) => loop {
-            // SAFETY: chamada sem ponteiros.
-            unsafe { Sleep(1000) };
+            time::sleep_ms(1000);
         },
     }
 }
@@ -234,7 +209,7 @@ fn read_state() -> State {
     s
 }
 
-fn write_report(reason: &str, details: fmt::Arguments, exception_address: Option<usize>) {
+fn write_report(reason: &str, details: fmt::Arguments, instruction_address: Option<usize>) {
     if !enter_crash() {
         return;
     }
@@ -243,28 +218,24 @@ fn write_report(reason: &str, details: fmt::Arguments, exception_address: Option
     let buf: &mut [u8] = unsafe { &mut *REPORT.0.get() };
     let mut t = TextBuf::new(buf);
 
-    // SAFETY: SYSTEMTIME só tem inteiros; zero é válido. Chamadas sem ponteiros externos.
-    let (now, ms, thread) = unsafe {
-        let mut st = core::mem::zeroed();
-        GetLocalTime(&mut st);
-        (st, GetTickCount64(), GetCurrentThreadId())
-    };
-    let uptime_s = ms.saturating_sub(START_MS.load(Ordering::Relaxed)) as f64 / 1000.0;
+    let now = time::utc_now();
+    let elapsed = time::ticks().saturating_sub(START_TICKS.load(Ordering::Relaxed));
+    let uptime_s = time::ticks_to_seconds(elapsed, time::ticks_per_second());
 
     let _ = writeln!(t, "=== Forja: relatório de crash ===");
     let _ = writeln!(t, "jogo:    {} {}", state.config.app, state.config.version);
     let _ = writeln!(
         t,
-        "data:    {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond
+        "data:    {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+        now.year, now.month, now.day, now.hour, now.minute, now.second
     );
     let _ = writeln!(t, "rodando: {uptime_s:.3} s");
     let _ = writeln!(t, "frame:   {}", FRAME.load(Ordering::Relaxed));
-    let _ = writeln!(t, "thread:  {thread}");
+    let _ = writeln!(t, "thread:  {}", process::thread_id());
     let _ = writeln!(t, "motivo:  {reason}");
     let _ = writeln!(t, "detalhe: {details}");
 
-    write_stack(&mut t, exception_address);
+    write_stack(&mut t, instruction_address);
     write_system_memory(&mut t);
     for s in state.sections.iter().flatten() {
         let _ = writeln!(t, "\n--- {} ---", s.name);
@@ -281,10 +252,17 @@ fn write_report(reason: &str, details: fmt::Arguments, exception_address: Option
     let _ = write!(
         path,
         "{}/crash_{:04}-{:02}-{:02}_{:02}{:02}{:02}.txt",
-        state.config.dir, now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond
+        state.config.dir, now.year, now.month, now.day, now.hour, now.minute, now.second
     );
-    create_dir(state.config.dir);
-    let written = write_file(path.as_str(), t.as_bytes());
+    let _ = file::create_dir(state.config.dir);
+    let written = match FileWriter::create(path.as_str()) {
+        Some(f) => {
+            let ok = f.write_all(t.as_bytes());
+            f.close();
+            ok
+        }
+        None => false,
+    };
 
     let mut notice_buf = [0u8; 1024];
     let mut notice = TextBuf::new(&mut notice_buf);
@@ -297,9 +275,9 @@ fn write_report(reason: &str, details: fmt::Arguments, exception_address: Option
     let _ = std::io::Write::write_all(&mut std::io::stderr(), notice.as_bytes());
 }
 
-fn write_stack(t: &mut TextBuf, exception_address: Option<usize>) {
+fn write_stack(t: &mut TextBuf, instruction_address: Option<usize>) {
     let _ = writeln!(t, "\n--- pilha (módulo+deslocamento; simbolize com tools/symbolize.sh) ---");
-    if let Some(address) = exception_address {
+    if let Some(address) = instruction_address {
         let _ = write!(t, "exceção 0x{address:016x} ");
         stack::write_module_offset(t, address);
         let _ = t.write_char('\n');
@@ -319,86 +297,22 @@ fn mib(bytes: u64) -> f64 {
 
 fn write_system_memory(t: &mut TextBuf) {
     let _ = writeln!(t, "\n--- memória do sistema ---");
-    // SAFETY: structs C só com inteiros (zero é válido); tamanhos preenchidos antes da chamada.
-    unsafe {
-        let mut m: MEMORYSTATUSEX = core::mem::zeroed();
-        m.dwLength = size_of::<MEMORYSTATUSEX>() as u32;
-        if GlobalMemoryStatusEx(&mut m) != 0 {
-            let _ = writeln!(
-                t,
-                "RAM:      {:.0} MB livres de {:.0} MB (carga {}%)",
-                mib(m.ullAvailPhys),
-                mib(m.ullTotalPhys),
-                m.dwMemoryLoad
-            );
-            let _ = writeln!(
-                t,
-                "commit:   {:.0} MB livres de {:.0} MB (limite do sistema)",
-                mib(m.ullAvailPageFile),
-                mib(m.ullTotalPageFile)
-            );
-        }
-        let mut p: PROCESS_MEMORY_COUNTERS = core::mem::zeroed();
-        p.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
-        if K32GetProcessMemoryInfo(GetCurrentProcess(), &mut p, p.cb) != 0 {
-            let _ = writeln!(
-                t,
-                "processo: working set {:.1} MB (pico {:.1}), commit {:.1} MB (pico {:.1})",
-                mib(p.WorkingSetSize as u64),
-                mib(p.PeakWorkingSetSize as u64),
-                mib(p.PagefileUsage as u64),
-                mib(p.PeakPagefileUsage as u64)
-            );
+    if let Some(m) = process::system_memory() {
+        let _ = writeln!(
+            t,
+            "RAM:      {:.0} MB livres de {:.0} MB",
+            mib(m.available_physical),
+            mib(m.total_physical)
+        );
+        if let (Some(limit), Some(available)) = (m.commit_limit, m.commit_available) {
+            let _ = writeln!(t, "commit:   {:.0} MB livres de {:.0} MB (limite do sistema)", mib(available), mib(limit));
         }
     }
-}
-
-// ---------------------------------------------------------------- arquivo (Win32, sem alocar)
-
-fn utf16_into<'b>(s: &str, buf: &'b mut [u16]) -> Option<&'b [u16]> {
-    let mut n: usize = 0;
-    for c in s.encode_utf16() {
-        *buf.get_mut(n)? = c;
-        n = n.checked_add(1)?;
-    }
-    *buf.get_mut(n)? = 0;
-    buf.get(..=n)
-}
-
-fn create_dir(dir: &str) {
-    let mut buf = [0u16; 260];
-    if let Some(p) = utf16_into(dir, &mut buf) {
-        // SAFETY: `p` termina em 0. Falha (pasta já existe) é ignorada.
-        unsafe { CreateDirectoryW(p.as_ptr(), null()) };
-    }
-}
-
-fn write_file(path: &str, data: &[u8]) -> bool {
-    let mut buf = [0u16; 260];
-    let Some(p) = utf16_into(path, &mut buf) else {
-        return false;
-    };
-    // SAFETY: `p` termina em 0; sem atributos de segurança nem template.
-    let h = unsafe {
-        CreateFileW(p.as_ptr(), GENERIC_WRITE, 0, null(), CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, null_mut())
-    };
-    if h == INVALID_HANDLE_VALUE {
-        return false;
-    }
-    let mut rest = data;
-    let mut ok = true;
-    while !rest.is_empty() {
-        let n = u32::try_from(rest.len()).unwrap_or(u32::MAX);
-        let mut written: u32 = 0;
-        // SAFETY: `rest` tem pelo menos `n` bytes; escrita síncrona.
-        let r = unsafe { WriteFile(h, rest.as_ptr(), n, &mut written, null_mut()) };
-        if r == 0 || written == 0 {
-            ok = false;
-            break;
+    if let Some(p) = process::process_memory() {
+        let _ = write!(t, "processo: residente {:.1} MB (pico {:.1})", mib(p.resident), mib(p.peak_resident));
+        if let (Some(c), Some(pc)) = (p.committed, p.peak_committed) {
+            let _ = write!(t, ", commit {:.1} MB (pico {:.1})", mib(c), mib(pc));
         }
-        rest = rest.get(written as usize..).unwrap_or(&[]);
+        let _ = t.write_char('\n');
     }
-    // SAFETY: `h` é válido e fechado uma vez.
-    unsafe { CloseHandle(h) };
-    ok
 }

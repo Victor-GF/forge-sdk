@@ -1,0 +1,4 @@
+# O projeto é editado no Windows e compilado/executado também no Linux (WSL):
+# texto sempre com LF, independente do core.autocrlf de cada máquina.
+* text=auto eol=lf
+*.sh text eol=lf

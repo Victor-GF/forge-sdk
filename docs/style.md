@@ -23,6 +23,28 @@ ele faz deve estar à vista.
 - Tipos em `PascalCase`, funções e métodos em `snake_case`, constantes em `UPPER_CASE`.
 - Pastas: `engine/`, `games/`, `tests/`, `tools/`, `docs/`.
 
+## Camada de SO
+
+- **Só o `forja_os` fala com o sistema operacional** (e o backend de janela do
+  `forja_platform`). Nenhum outro crate depende de `windows-sys` ou `libc`.
+- O **contrato** é o `forja_os/src/lib.rs`: tipos e funções públicas, documentados com unidades,
+  erros, thread-safety e "não aloca". Os backends (`windows.rs`, `linux.rs`) são escolhidos em
+  tempo de compilação: sem trait, sem dispatch. Backend fora do contrato não compila.
+- O que difere de verdade entre sistemas fica escrito no contrato (ex.: granularidade de
+  reserva é 64 KB no Windows e uma página no Linux). Código e testes não assumem valores do
+  Windows.
+- Os **testes de contrato** (`forja_os/tests/contract.rs`) e os crash tests rodam nos dois
+  sistemas. Validação completa = Windows **e** WSL.
+- `forja_platform` segue o mesmo modelo para a janela. Linux ainda não tem janela; o jogo roda
+  com `--headless N` (dt fixo, entrada roteirizada) para depuração e profiling.
+
+## Desenvolvimento no WSL
+
+- Edita-se no `D:` (Windows); o WSL enxerga o mesmo projeto em `/mnt/d/...`.
+- No WSL, os artefatos ficam no disco do Linux para não misturar com o `target` do Windows e
+  compilar mais rápido: `export CARGO_TARGET_DIR=$HOME/.cache/forja-target`.
+- Quebras de linha: o `.gitattributes` fixa LF para todo texto (scripts `.sh` quebram com CRLF).
+
 ## Tipos e funções
 
 - **Operações de um tipo são métodos** (`impl Tipo`): `arena.alloc_slice(n, 0)`,
@@ -63,7 +85,7 @@ ele faz deve estar à vista.
   - listas e tabelas: `arena.alloc_slice` (capacidade fixa decidida na criação)
   - texto: `TextBuf` sobre um buffer da stack ou da arena + `write!`
   - log: `log::info(format_args!(...))`
-  - arquivos: `forja_platform::file::FileWriter` (a `std::fs` aloca no Windows)
+  - arquivos: `forja_os::file::FileWriter` (a `std::fs` aloca no Windows)
 - **Páginas**: a região é arredondada para o bloco de reserva do SO (64 KB) e cada arena começa
   numa página (4 KB) com tamanho múltiplo de página; os bytes do arredondamento ficam com a
   própria arena. Dentro da arena não há alinhamento a página: os dados ficam colados.
@@ -108,7 +130,7 @@ indexação (`clippy.toml`).
 
 ## Validação
 
-Depois de cada mudança:
+Depois de cada mudança, no Windows e no WSL:
 
 ```
 cargo test --workspace

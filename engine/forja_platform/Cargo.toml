@@ -4,17 +4,14 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-# MVP é só Windows: Win32 direto, o jogo é dono do loop.
+forja_os.workspace = true
+
+# Backend de janela do Windows. Relógio, sleep e arquivos vêm do forja_os.
+[target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
-    "Win32_Media",
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_IO",
     "Win32_System_LibraryLoader",
-    "Win32_System_Performance",
-    "Win32_System_Threading",
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
 ] }

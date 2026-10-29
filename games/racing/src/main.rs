@@ -4,7 +4,11 @@
 //! Controles: W acelera, S freia, Esc sai.
 //! Ao sair, grava `racing.trace.json` (abrir em https://ui.perfetto.dev).
 //!
-//! Memória: um único `VirtualAlloc` com o orçamento abaixo; a thread principal usa a sua
+//! `racing --headless N`: sem janela (em qualquer SO), roda N frames o mais rápido possível com
+//! dt fixo e entrada roteirizada. Serve para testes, depuração (gdb) e profiling (cachegrind,
+//! perf). No Linux, que ainda não tem janela, é o único modo.
+//!
+//! Memória: uma única reserva ao SO com o orçamento abaixo; a thread principal usa a sua
 //! `ThreadMemory` (persistent, level, frame). O heap geral (std/dependências) tem orçamento
 //! próprio e, depois da inicialização, cada ponto de chamada que alocar aparece no log com a
 //! pilha. A meta do jogo é zero alocações no heap geral por frame (contador no trace).
@@ -20,9 +24,9 @@ use forja_inspect::{ChromeTraceExport, Counter, ENABLED as PROFILER_ENABLED, Pro
 use forja_mem::arena::Arena;
 use forja_mem::global;
 use forja_mem::region::{MemoryRegion, ThreadMemory, ThreadMemoryDesc};
-use forja_platform::file::FileWriter;
+use forja_os::file::FileWriter;
 use forja_platform::input::Key;
-use forja_platform::{Platform, WindowDesc};
+use forja_platform::{Platform, PlatformError, WindowDesc};
 
 #[cfg(not(test))]
 #[global_allocator]
@@ -65,6 +69,12 @@ const TRACE_PATH: &str = "racing.trace.json";
 const TARGET_FRAME_SECONDS: f64 = 1.0 / 60.0;
 /// Limite do dt da simulação (pausa no debugger, janela arrastada).
 const MAX_DT: f32 = 0.1;
+/// Modo headless: dt fixo, para a simulação dar o mesmo resultado em qualquer máquina.
+const HEADLESS_DT: f32 = 1.0 / 60.0;
+const HEADLESS_DEFAULT_FRAMES: u64 = 600;
+/// Entrada roteirizada do modo headless: acelera por 4 s, freia por 1 s, repete.
+const SCRIPT_PERIOD_FRAMES: u64 = 300;
+const SCRIPT_THROTTLE_FRAMES: u64 = 240;
 
 const KEY_THROTTLE: Key = Key(b'W');
 const KEY_BRAKE: Key = Key(b'S');
@@ -154,12 +164,24 @@ fn main() -> ExitCode {
     };
     let mut prof = Profiler::new(&PROFILER_NAMES, events);
 
-    let desc = WindowDesc { title: "Forja racing", width: 1280, height: 720 };
-    let mut platform = match Platform::init(&desc) {
-        Ok(p) => p,
-        Err(e) => {
-            log::error(format_args!("falha ao criar janela: {e:?}"));
-            return ExitCode::FAILURE;
+    let mut platform = match headless_frames_from_args() {
+        Some(frames) => {
+            log::info(format_args!("modo headless: {frames} frames, dt fixo, entrada roteirizada"));
+            Platform::headless(frames)
+        }
+        None => {
+            let desc = WindowDesc { title: "Forja racing", width: 1280, height: 720 };
+            match Platform::init(&desc) {
+                Ok(p) => p,
+                Err(PlatformError::WindowUnsupported) => {
+                    log::error(format_args!("este SO ainda não tem janela; rode com --headless N"));
+                    return ExitCode::FAILURE;
+                }
+                Err(e) => {
+                    log::error(format_args!("falha ao criar janela: {e:?}"));
+                    return ExitCode::FAILURE;
+                }
+            }
         }
     };
 
@@ -188,24 +210,51 @@ fn main() -> ExitCode {
         }
 
         prof.begin(ZONE_UPDATE);
-        let dt = platform.dt.min(MAX_DT);
-        car.update(platform.input.key_down(KEY_THROTTLE), platform.input.key_down(KEY_BRAKE), dt);
+        if platform.is_headless() {
+            let in_period = platform.frame_index.wrapping_rem(SCRIPT_PERIOD_FRAMES);
+            let throttle = in_period < SCRIPT_THROTTLE_FRAMES;
+            car.update(throttle, !throttle, HEADLESS_DT);
+        } else {
+            let dt = platform.dt.min(MAX_DT);
+            car.update(platform.input.key_down(KEY_THROTTLE), platform.input.key_down(KEY_BRAKE), dt);
+        }
         stats.add_frame(platform.dt);
         stats.update_title(&platform, &car, &memory.frame);
         prof.end(ZONE_UPDATE);
 
-        prof.begin(ZONE_WAIT);
-        platform.wait_frame(TARGET_FRAME_SECONDS);
-        prof.end(ZONE_WAIT);
+        // Headless roda o mais rápido possível (profiling); com janela, trava em 60 fps.
+        if !platform.is_headless() {
+            prof.begin(ZONE_WAIT);
+            platform.wait_frame(TARGET_FRAME_SECONDS);
+            prof.end(ZONE_WAIT);
+        }
 
         end_frame(&mut prof, &mut memory.frame, &mut heap_allocations_before);
         prof.end(ZONE_FRAME);
     }
 
+    log::info(format_args!(
+        "fim: {} frames, velocidade final {:.0} km/h",
+        platform.frame_index.saturating_sub(1),
+        car.speed * 3.6
+    ));
     platform.shutdown();
     save_trace(&prof);
     log_memory(&memory);
     ExitCode::SUCCESS
+}
+
+/// `--headless N` (N opcional). Lido na inicialização: a std aloca para os argumentos, o que é
+/// permitido antes de `global::end_startup()`.
+fn headless_frames_from_args() -> Option<u64> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--headless" {
+            let frames = args.next().and_then(|n| n.parse::<u64>().ok());
+            return Some(frames.unwrap_or(HEADLESS_DEFAULT_FRAMES));
+        }
+    }
+    None
 }
 
 /// Registra o uso de memória do frame e zera a arena do frame.

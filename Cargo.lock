@@ -19,7 +19,7 @@ name = "forja_diag"
 version = "0.1.0"
 dependencies = [
  "forja_core",
- "windows-sys",
+ "forja_os",
 ]
 
 [[package]]
@@ -35,6 +35,15 @@ version = "0.1.0"
 dependencies = [
  "forja_core",
  "forja_diag",
+ "forja_os",
+]
+
+[[package]]
+name = "forja_os"
+version = "0.1.0"
+dependencies = [
+ "forja_core",
+ "libc",
  "windows-sys",
 ]
 
@@ -42,8 +51,15 @@ dependencies = [
 name = "forja_platform"
 version = "0.1.0"
 dependencies = [
+ "forja_os",
  "windows-sys",
 ]
+
+[[package]]
+name = "libc"
+version = "0.2.191"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "racing"
@@ -53,6 +69,7 @@ dependencies = [
  "forja_diag",
  "forja_inspect",
  "forja_mem",
+ "forja_os",
  "forja_platform",
 ]
 

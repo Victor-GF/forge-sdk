@@ -7,6 +7,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Como o módulo aparece na pilha (`forja_os::stack::write_module_offset`).
+const MODULE: &str = if cfg!(windows) { "crash_tests.exe+0x" } else { "crash_tests+0x" };
+
 struct Outcome {
     code: Option<i32>,
     stderr: String,
@@ -32,7 +35,7 @@ fn check_common(o: &Outcome, reason: &str) {
     assert!(o.report.contains(&format!("motivo:  {reason}\n")), "{}", o.report);
     assert!(o.report.contains("jogo:    crash_tests"), "{}", o.report);
     assert!(o.report.contains("frame:   42"), "{}", o.report);
-    assert!(o.report.contains("crash_tests.exe+0x"), "pilha sem o módulo:\n{}", o.report);
+    assert!(o.report.contains(MODULE), "pilha sem o módulo:\n{}", o.report);
     assert!(o.report.contains("--- memória do sistema ---"), "{}", o.report);
     assert!(o.report.contains("--- memória da forja ---"), "{}", o.report);
     assert!(o.report.contains("crash_tests: modo"), "breadcrumbs sem o log:\n{}", o.report);
@@ -74,7 +77,7 @@ fn heap_reports_each_call_site_once_without_crashing() {
     assert_eq!(stderr.matches("heap geral: alocação de").count(), 2, "{stderr}");
     assert!(stderr.contains("heap geral: alocação de 100 bytes"), "{stderr}");
     assert!(stderr.contains("heap geral: alocação de 2000 bytes"), "{stderr}");
-    assert!(stderr.contains("pilha: crash_tests.exe+0x"), "{stderr}");
+    assert!(stderr.contains(&format!("pilha: {MODULE}")), "{stderr}");
     assert!(stderr.contains("heap geral passou do orçamento"), "{stderr}");
     assert!(stderr.contains("report: 2 pontos de chamada relatados"), "{stderr}");
 }

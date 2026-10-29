@@ -1,0 +1,32 @@
+[package]
+name = "forja_os"
+version.workspace = true
+edition.workspace = true
+
+# Único crate que fala com o sistema operacional. Os backends são escolhidos pelo alvo de
+# compilação; quem usa vê só o contrato em src/lib.rs.
+[dependencies]
+forja_core.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Media",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_Kernel",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Performance",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

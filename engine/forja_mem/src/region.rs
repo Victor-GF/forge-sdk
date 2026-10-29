@@ -1,19 +1,20 @@
-//! Região do programa: um único `VirtualAlloc` com o orçamento total, recortado em arenas.
+//! Região do programa: uma única reserva de memória ao SO (`forja_os::memory::reserve`) com o
+//! orçamento total, recortada em arenas.
 //!
-//! Páginas: o SO entrega memória em páginas (4 KB) dentro de blocos de reserva (64 KB).
-//! A região é arredondada para o bloco e cada arena começa numa página e tem tamanho múltiplo
-//! de página. O arredondamento não é desperdício: os bytes extras ficam com a própria arena.
-//! Dentro da arena não há alinhamento a página: os dados ficam colados.
+//! Páginas: o SO entrega memória em páginas (4 KB) dentro de blocos de reserva (64 KB no
+//! Windows, uma página no Linux). A região é arredondada para o bloco e cada arena começa numa
+//! página e tem tamanho múltiplo de página. O arredondamento não é desperdício: os bytes extras
+//! ficam com a própria arena. Dentro da arena não há alinhamento a página: os dados ficam colados.
 //!
 //! A região nunca é devolvida ao SO (vive até o processo acabar); por isso as arenas
 //! recortadas dela podem ser movidas livremente sem risco de apontar para memória liberada.
 
-use core::ptr::null;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use forja_diag::crash;
-use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc};
-use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
+use forja_os::memory;
+
+pub use forja_os::memory::{PageInfo, page_info};
 
 use crate::arena::{Arena, bump_reserve};
 use crate::stats::{REGION_CAPACITY, REGION_PAGE_SIZE, REGION_USED, crash_section};
@@ -46,13 +47,6 @@ pub struct ThreadMemory {
     pub frame: Arena,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PageInfo {
-    pub page_size: usize,
-    /// Granularidade de reserva do `VirtualAlloc` (64 KB no Windows).
-    pub allocation_granularity: usize,
-}
-
 static CRASH_SECTION_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Arredonda `v` para cima até múltiplo de `m` (potência de 2).
@@ -64,37 +58,20 @@ pub fn round_up_pow2(v: usize, m: usize) -> Option<usize> {
     Some(v.checked_add(mask)? & !mask)
 }
 
-pub fn page_info() -> PageInfo {
-    // SAFETY: SYSTEM_INFO só tem inteiros e ponteiros; zero é válido; a função só escreve.
-    let info: SYSTEM_INFO = unsafe {
-        let mut i = core::mem::zeroed();
-        GetSystemInfo(&mut i);
-        i
-    };
-    PageInfo {
-        page_size: info.dwPageSize as usize,
-        allocation_granularity: info.dwAllocationGranularity as usize,
-    }
-}
-
 impl MemoryRegion {
-    /// Pede ao SO `capacity` bytes (reservados e commitados), arredondados para o bloco de
-    /// reserva. Chame uma vez, no início. Páginas nunca tocadas não ocupam RAM física (mas
-    /// contam no limite de commit do sistema).
+    /// Pede ao SO `capacity` bytes, arredondados para o bloco de reserva. Chame uma vez, no
+    /// início. Páginas nunca tocadas não ocupam RAM física (no Windows contam no limite de
+    /// commit do sistema).
     pub fn reserve(capacity: usize) -> Option<MemoryRegion> {
         let pages = page_info();
         let capacity = round_up_pow2(capacity, pages.allocation_granularity)?;
-        // SAFETY: pedido simples de memória nova; o resultado é checado.
-        let base = unsafe { VirtualAlloc(null(), capacity, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE) };
-        if base.is_null() {
-            return None;
-        }
+        let base = memory::reserve(capacity)?;
         REGION_CAPACITY.store(capacity, Ordering::Relaxed);
         REGION_PAGE_SIZE.store(pages.page_size, Ordering::Relaxed);
         if !CRASH_SECTION_REGISTERED.swap(true, Ordering::AcqRel) {
             crash::register_section("memória da forja", crash_section);
         }
-        Some(MemoryRegion { base: base.cast::<u8>(), capacity, used: 0, page_size: pages.page_size })
+        Some(MemoryRegion { base, capacity, used: 0, page_size: pages.page_size })
     }
 
     /// Recorta uma arena começando numa página, com capacidade arredondada para página.
@@ -146,10 +123,11 @@ mod tests {
 
     #[test]
     fn region_and_arenas_follow_pages() {
+        // Só o que o contrato garante: granularidade 64 KB no Windows, uma página no Linux.
         let pages = page_info();
         let page = pages.page_size;
-        let mut r = MemoryRegion::reserve(1000).unwrap();
-        assert_eq!(r.capacity(), pages.allocation_granularity);
+        let mut r = MemoryRegion::reserve(4 * page).unwrap();
+        assert_eq!(r.capacity(), round_up_pow2(4 * page, pages.allocation_granularity).unwrap());
         assert_eq!(r.page_size(), page);
 
         let desc = ThreadMemoryDesc { persistent: 1000, level: 1, frame: page + 1 };
@@ -166,6 +144,6 @@ mod tests {
         assert_eq!(tm.level.used(), 0);
 
         // não cabe mais que a região
-        assert!(r.arena("grande", pages.allocation_granularity).is_none());
+        assert!(r.arena("grande", r.capacity() - r.used() + 1).is_none());
     }
 }

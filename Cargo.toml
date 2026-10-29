@@ -4,6 +4,7 @@ members = [
     "engine/forja_core",
     "engine/forja_diag",
     "engine/forja_mem",
+    "engine/forja_os",
     "engine/forja_platform",
     "engine/forja_inspect",
     "games/racing",
@@ -18,6 +19,7 @@ edition = "2024"
 forja_core = { path = "engine/forja_core" }
 forja_diag = { path = "engine/forja_diag" }
 forja_mem = { path = "engine/forja_mem" }
+forja_os = { path = "engine/forja_os" }
 forja_platform = { path = "engine/forja_platform" }
 forja_inspect = { path = "engine/forja_inspect" }
 

@@ -4,7 +4,8 @@
 //! Os dados da engine e do jogo NÃO passam por aqui: eles saem das arenas de cada thread.
 //! O heap geral atende o que não controlamos (std, dependências) e serve de vigia:
 //!
-//! - **Backend**: o heap do sistema (`std::alloc::System` = `HeapAlloc`/LFH no Windows),
+//! - **Backend**: o heap do sistema (`std::alloc::System`: `HeapAlloc`/LFH no Windows, `malloc`
+//!   da glibc no Linux),
 //!   maduro e thread-safe. Fica atrás deste módulo e pode ser trocado (ex.: mimalloc) sem
 //!   mudar quem usa.
 //! - **Contabilidade**: bytes vivos, pico, alocações e liberações; por tag (categoria), como o
@@ -38,7 +39,8 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering}
 use std::alloc::System;
 
 use forja_core::text::TextBuf;
-use forja_diag::{crash, log, stack};
+use forja_diag::{crash, log};
+use forja_os::stack;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
