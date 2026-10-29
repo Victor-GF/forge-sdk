@@ -3,7 +3,13 @@
 //! Não chama o SO: atende pedidos com bump num buffer fixo em `.bss`. Existe só para a
 //! inicialização da std (antes e logo no começo do `main`). Depois que o jogo chama
 //! `global_travar`, qualquer alocação — `Vec`, `String`, `Box`, `format!`, de qualquer
-//! crate — imprime um aviso e aborta. Rodando no debugger, o abort para na pilha culpada.
+//! crate — grava um crash report (com a pilha de quem alocou) e aborta.
+//!
+//! Exceção: durante um panic a alocação é permitida, porque a std formata a mensagem num
+//! `String` antes de chamar o gancho de panic; assim o relatório sai com a mensagem certa.
+//!
+//! Buffer esgotado também é fatal (com relatório), em vez de devolver nulo: o handler de
+//! erro de alocação da std aborta sem passar pelo crash report.
 //!
 //! Liberar só devolve espaço se for o último bloco (LIFO); o resto fica perdido até o fim.
 //! Como o uso é só na inicialização, isso é proposital.
@@ -17,11 +23,9 @@
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
-use core::fmt::Write;
-use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use forja_core::texto::{texto_bytes, texto_novo};
+use forja_diag::crash::diag_fatal;
 
 use crate::arena::bump_reservar;
 
@@ -73,23 +77,20 @@ pub fn global_estatistica() -> GlobalEstatistica {
     }
 }
 
-fn global_violacao(tamanho: usize) -> ! {
-    let mut buf = [0u8; 192];
-    let mut t = texto_novo(&mut buf);
-    let _ = writeln!(
-        t,
-        "[forja_mem] alocacao de {tamanho} bytes com o alocador global travado. \
-         Rode no debugger para ver a pilha."
-    );
-    let _ = std::io::Write::write_all(&mut std::io::stderr(), texto_bytes(&t));
-    std::process::abort()
-}
-
-// SAFETY: devolve faixas alinhadas e disjuntas do buffer estático, ou nulo quando não cabe.
+// SAFETY: devolve faixas alinhadas e disjuntas do buffer estático; quando não cabe, não
+// devolve (crash report + abort).
 unsafe impl GlobalAlloc for AlocadorGlobal {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if GLOBAL_TRAVADO.load(Ordering::Acquire) {
-            global_violacao(layout.size());
+        if GLOBAL_TRAVADO.load(Ordering::Acquire) && !std::thread::panicking() {
+            diag_fatal(
+                "alocação com o alocador global travado",
+                format_args!(
+                    "pedido de {} bytes (alinhamento {}) depois de global_travar(). \
+                     A pilha abaixo mostra quem alocou (Vec, String, Box, format!...).",
+                    layout.size(),
+                    layout.align()
+                ),
+            );
         }
         let base = GLOBAL_BUF.0.get().cast::<u8>();
         let mut usado = GLOBAL_USADO.load(Ordering::Relaxed);
@@ -97,7 +98,16 @@ unsafe impl GlobalAlloc for AlocadorGlobal {
             let Some((inicio, fim)) =
                 bump_reservar(base as usize, usado, layout.size(), layout.align(), GLOBAL_CAPACIDADE)
             else {
-                return null_mut();
+                diag_fatal(
+                    "alocador global esgotado",
+                    format_args!(
+                        "pedido de {} bytes com {} de {} usados. A inicialização da std ou de \
+                         uma dependência está alocando mais que o previsto.",
+                        layout.size(),
+                        usado,
+                        GLOBAL_CAPACIDADE
+                    ),
+                );
             };
             match GLOBAL_USADO.compare_exchange_weak(usado, fim, Ordering::AcqRel, Ordering::Relaxed) {
                 Ok(_) => {
@@ -123,8 +133,8 @@ unsafe impl GlobalAlloc for AlocadorGlobal {
 mod tests {
     use super::*;
 
-    // Chama o alocador direto (nos testes ele não é o global). Não testa o travamento,
-    // porque abortaria o processo de testes.
+    // Chama o alocador direto (nos testes ele não é o global). Travamento e esgotamento
+    // abortam o processo: são testados em `testes/crash`.
     #[test]
     fn bump_alinhado_e_devolve_ultimo_bloco() {
         let l = Layout::from_size_align(32, 16).unwrap();
@@ -138,11 +148,5 @@ mod tests {
             assert_eq!(global_estatistica().usado, antes);
             AlocadorGlobal.dealloc(a, l);
         }
-    }
-
-    #[test]
-    fn pedido_maior_que_o_buffer_devolve_nulo() {
-        let l = Layout::from_size_align(GLOBAL_CAPACIDADE + 1, 8).unwrap();
-        assert!(unsafe { AlocadorGlobal.alloc(l) }.is_null());
     }
 }

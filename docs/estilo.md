@@ -28,7 +28,25 @@ e que nenhum custo fique escondido.
   - texto: `Texto` sobre um buffer da stack ou da arena + `write!`
   - log: `log_info(format_args!(...))`
   - arquivos: `forja_platform::arquivo` (a `std::fs` aloca no Windows)
+- **Páginas**: a região é arredondada para o bloco de reserva do SO (64 KB) e cada arena começa
+  numa página (4 KB) com tamanho múltiplo de página; os bytes do arredondamento ficam com a
+  própria arena. Dentro da arena não há alinhamento a página: os dados ficam colados.
+- **Orçamento visível**: ao passar de 90%, a arena avisa no log (uma vez). Falta de espaço
+  devolve `None`; quando for fatal, `arena_oom_fatal(&arena)` grava o crash report com o
+  pedido que falhou e o uso de todas as arenas.
 - **Stack**: 1 MB na thread principal do Windows. Buffers grandes vão para arena.
+
+## Diagnóstico
+
+- `forja_diag::log`: `log_info/aviso/erro(format_args!(...))`, sem alocar; as últimas linhas
+  ficam num ring buffer (rastro) que vai para o crash report.
+- `diag_instalar` no início do `main`: panic, exceções do SO (access violation, stack
+  overflow...) e erros fatais da engine geram `crash/crash_AAAA-MM-DD_HHMMSS.txt` com motivo,
+  pilha, memória do sistema, memória da forja, seções registradas e rastro.
+- Todo caminho que aborta de propósito chama `diag_fatal` antes (o `abort` do Windows pula os
+  handlers de exceção).
+- Perfis com `panic = "abort"`: o gancho grava o relatório e encerra; não há unwind.
+- Pilha simbolizada: `ferramentas/simbolizar.sh <relatorio> <exe>` (addr2line, mesmo build).
 - **Exceção aos genéricos:** `arena_slice`/`arena_valor` (`T: Copy`), para entregar memória
   tipada sem `unsafe` no jogo.
 - **Exceção ao estado global e às traits:** o alocador global (`unsafe impl GlobalAlloc`),

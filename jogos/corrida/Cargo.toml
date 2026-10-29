@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 forja_core.workspace = true
+forja_diag.workspace = true
 forja_mem.workspace = true
 forja_platform.workspace = true
 forja_inspect.workspace = true

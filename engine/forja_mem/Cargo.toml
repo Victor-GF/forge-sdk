@@ -5,7 +5,11 @@ edition.workspace = true
 
 [dependencies]
 forja_core.workspace = true
-windows-sys = { version = "0.59", features = ["Win32_System_Memory"] }
+forja_diag.workspace = true
+windows-sys = { version = "0.59", features = [
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+] }
 
 [lints]
 workspace = true

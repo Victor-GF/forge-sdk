@@ -11,14 +11,17 @@
 use core::fmt::Write;
 use std::process::ExitCode;
 
-use forja_core::log::{log_erro, log_info};
 use forja_core::math::f32_clamp;
 use forja_core::texto::{texto_novo, texto_str};
+use forja_diag::crash::{DiagDesc, diag_frame, diag_instalar};
+use forja_diag::log::{log_erro, log_info};
 use forja_inspect::{
     ATIVO, PROF_EVENTO_VAZIO, Profiler, prof_contador, prof_exportar_bloco, prof_exportar_inicio,
     prof_fim, prof_inicio, prof_tsc_por_segundo, profiler_create,
 };
-use forja_mem::arena::{Arena, arena_estatistica, arena_reset, arena_slice, arena_usado};
+use forja_mem::arena::{
+    Arena, arena_estatistica, arena_oom_fatal, arena_reset, arena_slice, arena_usado,
+};
 use forja_mem::global::{global_estatistica, global_travar};
 use forja_mem::memoria::{Mesa, MesaDesc, memoria_init, memoria_mesa};
 use forja_platform::arquivo::{arquivo_criar, arquivo_escrever, arquivo_fechar};
@@ -126,6 +129,8 @@ fn estatistica_titulo(e: &mut Estatistica, plat: &Platform, carro: &Carro, frame
 // ---------------------------------------------------------------- main
 
 fn main() -> ExitCode {
+    diag_instalar(DiagDesc { jogo: "corrida", versao: env!("CARGO_PKG_VERSION"), pasta: "crash" });
+
     let Some(mut memoria) = memoria_init(MEMORIA_TOTAL) else {
         log_erro(format_args!("sem memória: o SO recusou {MEMORIA_TOTAL_MB} MB"));
         return ExitCode::FAILURE;
@@ -137,8 +142,7 @@ fn main() -> ExitCode {
 
     let prof_cap = if ATIVO { PROF_CAPACIDADE } else { 0 };
     let Some(eventos) = arena_slice(&mesa.persistente, prof_cap, PROF_EVENTO_VAZIO) else {
-        log_erro(format_args!("buffer do profiler não cabe na arena persistente"));
-        return ExitCode::FAILURE;
+        arena_oom_fatal(&mesa.persistente)
     };
     let mut prof = profiler_create(&NOMES_PROF, eventos);
 
@@ -162,6 +166,7 @@ fn main() -> ExitCode {
     let mut est = Estatistica { acumulado_s: 0.0, pior_s: 0.0, frames: 0 };
 
     loop {
+        diag_frame(plat.frame_indice);
         prof_inicio(&mut prof, ZONA_FRAME);
 
         prof_inicio(&mut prof, ZONA_PLATAFORMA);

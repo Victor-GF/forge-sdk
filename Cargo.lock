@@ -7,14 +7,31 @@ name = "corrida"
 version = "0.1.0"
 dependencies = [
  "forja_core",
+ "forja_diag",
  "forja_inspect",
  "forja_mem",
  "forja_platform",
 ]
 
 [[package]]
+name = "crash_testes"
+version = "0.1.0"
+dependencies = [
+ "forja_diag",
+ "forja_mem",
+]
+
+[[package]]
 name = "forja_core"
 version = "0.1.0"
+
+[[package]]
+name = "forja_diag"
+version = "0.1.0"
+dependencies = [
+ "forja_core",
+ "windows-sys",
+]
 
 [[package]]
 name = "forja_inspect"
@@ -28,6 +45,7 @@ name = "forja_mem"
 version = "0.1.0"
 dependencies = [
  "forja_core",
+ "forja_diag",
  "windows-sys",
 ]
 

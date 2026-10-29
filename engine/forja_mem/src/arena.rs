@@ -5,23 +5,30 @@
 //! alocações pegam `&Arena`, o compilador prova que nenhuma referência sobrevive ao reset.
 //!
 //! Só tipos `Copy` entram: a arena nunca roda destrutores.
+//!
+//! Estatísticas ficam no painel (`painel.rs`), legíveis de outras threads pelo crash report.
+//! Ao passar de 90% da capacidade pela primeira vez, a arena registra um aviso no log.
 
-use core::cell::Cell;
+use core::sync::atomic::Ordering;
+
+use forja_diag::crash::diag_fatal;
+use forja_diag::log::log_aviso;
+
+use crate::painel::{PainelSlot, painel_registrar};
 
 /// Campos privados: `base`/`capacidade` são o invariante de segurança da arena.
 /// Consulte com `arena_estatistica`.
 pub struct Arena {
     base: *mut u8,
     capacidade: usize,
-    usado: Cell<usize>,
-    pico: Cell<usize>,
-    alocacoes: Cell<u32>,
-    falhas: Cell<u32>,
+    /// Acima disso (90%), avisa no log uma vez.
+    limite_aviso: usize,
+    painel: &'static PainelSlot,
     pub nome: &'static str,
 }
 
 // SAFETY: a arena é dona exclusiva da sua faixa de memória, então pode mudar de thread.
-// Ela continua !Sync (Cell): nunca é acessada por duas threads ao mesmo tempo.
+// Ela continua !Sync (ponteiro cru): nunca é acessada por duas threads ao mesmo tempo.
 unsafe impl Send for Arena {}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -33,6 +40,8 @@ pub struct ArenaEstatistica {
     pub alocacoes: u32,
     /// Pedidos que não couberam.
     pub falhas: u32,
+    /// Tamanho do último pedido que não coube.
+    pub ultima_falha: usize,
 }
 
 /// Reserva `tamanho` bytes alinhados a partir de `usado` num bloco que começa no endereço
@@ -59,36 +68,40 @@ pub fn bump_reservar(
     Some((inicio, fim))
 }
 
-/// Cria uma arena sobre memória já existente.
+/// Cria uma arena sobre memória já existente. `None` se o painel estiver cheio
+/// (`painel::PAINEL_MAX` arenas).
 ///
 /// # Safety
 /// `base` precisa apontar para `capacidade` bytes válidos para escrita, usados só por esta
 /// arena e vivos até o fim do programa.
-pub unsafe fn arena_de_bytes(nome: &'static str, base: *mut u8, capacidade: usize) -> Arena {
-    Arena {
-        base,
-        capacidade,
-        usado: Cell::new(0),
-        pico: Cell::new(0),
-        alocacoes: Cell::new(0),
-        falhas: Cell::new(0),
-        nome,
-    }
+pub unsafe fn arena_de_bytes(nome: &'static str, base: *mut u8, capacidade: usize) -> Option<Arena> {
+    let painel = painel_registrar(nome, capacidade)?;
+    let limite_aviso = capacidade.saturating_div(10).saturating_mul(9);
+    Some(Arena { base, capacidade, limite_aviso, painel, nome })
 }
 
 /// Bytes crus, não inicializados. Base para os outros `arena_*`.
 pub fn arena_bytes(a: &Arena, tamanho: usize, alinhamento: usize) -> Option<*mut u8> {
-    let Some((inicio, fim)) =
-        bump_reservar(a.base as usize, a.usado.get(), tamanho, alinhamento, a.capacidade)
+    let p = a.painel;
+    let usado = p.usado.load(Ordering::Relaxed);
+    let Some((inicio, fim)) = bump_reservar(a.base as usize, usado, tamanho, alinhamento, a.capacidade)
     else {
-        a.falhas.set(a.falhas.get().saturating_add(1));
+        p.falhas.store(p.falhas.load(Ordering::Relaxed).saturating_add(1), Ordering::Relaxed);
+        p.ultima_falha.store(tamanho, Ordering::Relaxed);
         return None;
     };
-    a.usado.set(fim);
-    if fim > a.pico.get() {
-        a.pico.set(fim);
+    p.usado.store(fim, Ordering::Relaxed);
+    p.alocacoes.store(p.alocacoes.load(Ordering::Relaxed).saturating_add(1), Ordering::Relaxed);
+    if fim > p.pico.load(Ordering::Relaxed) {
+        p.pico.store(fim, Ordering::Relaxed);
+        if fim > a.limite_aviso && !p.avisou.load(Ordering::Relaxed) {
+            p.avisou.store(true, Ordering::Relaxed);
+            log_aviso(format_args!(
+                "arena '{}' passou de 90% do orçamento: {} de {} bytes",
+                a.nome, fim, a.capacidade
+            ));
+        }
     }
-    a.alocacoes.set(a.alocacoes.get().saturating_add(1));
     Some(a.base.wrapping_add(inicio))
 }
 
@@ -118,33 +131,51 @@ pub fn arena_valor<T: Copy>(a: &Arena, valor: T) -> Option<&mut T> {
     }
 }
 
+/// Para quando a falta de espaço é fatal: grava o crash report (com o pedido que falhou e o
+/// uso da arena) e aborta.
+///
+/// `let Some(x) = arena_slice(&a, n, 0) else { arena_oom_fatal(&a) };`
+pub fn arena_oom_fatal(a: &Arena) -> ! {
+    let e = arena_estatistica(a);
+    diag_fatal(
+        "OOM de arena",
+        format_args!(
+            "arena '{}' sem espaço: pedido de {} bytes com {} de {} usados (pico {}). \
+             Aumente o orçamento da arena ou reduza o uso.",
+            a.nome, e.ultima_falha, e.usado, e.capacidade, e.pico
+        ),
+    )
+}
+
 pub fn arena_reset(a: &mut Arena) {
-    a.usado.set(0);
+    a.painel.usado.store(0, Ordering::Relaxed);
 }
 
 /// Posição atual, para voltar depois com `arena_voltar` (memória temporária em escopo).
 pub fn arena_marca(a: &Arena) -> usize {
-    a.usado.get()
+    a.painel.usado.load(Ordering::Relaxed)
 }
 
 /// Libera tudo que foi alocado depois de `marca`. Marca à frente do cursor é ignorada.
 pub fn arena_voltar(a: &mut Arena, marca: usize) {
-    if marca <= a.usado.get() {
-        a.usado.set(marca);
+    if marca <= a.painel.usado.load(Ordering::Relaxed) {
+        a.painel.usado.store(marca, Ordering::Relaxed);
     }
 }
 
 pub fn arena_usado(a: &Arena) -> usize {
-    a.usado.get()
+    a.painel.usado.load(Ordering::Relaxed)
 }
 
 pub fn arena_estatistica(a: &Arena) -> ArenaEstatistica {
+    let p = a.painel;
     ArenaEstatistica {
         capacidade: a.capacidade,
-        usado: a.usado.get(),
-        pico: a.pico.get(),
-        alocacoes: a.alocacoes.get(),
-        falhas: a.falhas.get(),
+        usado: p.usado.load(Ordering::Relaxed),
+        pico: p.pico.load(Ordering::Relaxed),
+        alocacoes: p.alocacoes.load(Ordering::Relaxed),
+        falhas: p.falhas.load(Ordering::Relaxed),
+        ultima_falha: p.ultima_falha.load(Ordering::Relaxed),
     }
 }
 
@@ -154,7 +185,7 @@ mod tests {
 
     fn arena_teste(capacidade: usize) -> Arena {
         let mem = vec![0u8; capacidade].leak();
-        unsafe { arena_de_bytes("teste", mem.as_mut_ptr(), capacidade) }
+        unsafe { arena_de_bytes("teste", mem.as_mut_ptr(), capacidade) }.unwrap()
     }
 
     #[test]
@@ -181,9 +212,9 @@ mod tests {
     fn falta_de_espaco_devolve_none_e_conta() {
         let a = arena_teste(64);
         assert!(arena_slice(&a, 16, 0u32).is_some());
-        assert!(arena_slice(&a, 1, 0u8).is_none());
+        assert!(arena_slice(&a, 3, 0u8).is_none());
         let e = arena_estatistica(&a);
-        assert_eq!((e.usado, e.falhas), (64, 1));
+        assert_eq!((e.usado, e.falhas, e.ultima_falha), (64, 1, 3));
     }
 
     #[test]

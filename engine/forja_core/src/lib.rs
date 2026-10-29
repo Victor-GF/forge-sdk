@@ -1,5 +1,4 @@
-//! Núcleo da Forja: matemática, texto sem alocação e log. Sem dependências.
+//! Núcleo da Forja: matemática e texto sem alocação. Sem dependências e sem estado.
 
-pub mod log;
 pub mod math;
 pub mod texto;

@@ -1,0 +1,18 @@
+[package]
+name = "crash_testes"
+version.workspace = true
+edition.workspace = true
+
+# Binário que provoca um tipo de crash por execução; os testes em tests/crash.rs rodam
+# cada modo como processo separado e conferem o relatório gravado.
+[[bin]]
+name = "crash_testes"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+forja_diag.workspace = true
+forja_mem.workspace = true
+
+[lints]
+workspace = true

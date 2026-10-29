@@ -2,10 +2,12 @@
 resolver = "3"
 members = [
     "engine/forja_core",
+    "engine/forja_diag",
     "engine/forja_mem",
     "engine/forja_platform",
     "engine/forja_inspect",
     "jogos/corrida",
+    "testes/crash",
 ]
 
 [workspace.package]
@@ -14,6 +16,7 @@ edition = "2024"
 
 [workspace.dependencies]
 forja_core = { path = "engine/forja_core" }
+forja_diag = { path = "engine/forja_diag" }
 forja_mem = { path = "engine/forja_mem" }
 forja_platform = { path = "engine/forja_platform" }
 forja_inspect = { path = "engine/forja_inspect" }
@@ -34,8 +37,13 @@ unimplemented = "deny"
 arithmetic_side_effects = "deny"
 
 # Dev: código do workspace levemente otimizado, dependências otimizadas.
+# panic = "abort": não há unwind; o gancho do forja_diag grava o crash report e aborta.
 [profile.dev]
 opt-level = 1
+panic = "abort"
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[profile.release]
+panic = "abort"
