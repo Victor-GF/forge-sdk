@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = [
+    "engine/forja_core",
+    "engine/forja_platform",
+    "engine/forja_inspect",
+    "jogos/corrida",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+forja_core = { path = "engine/forja_core" }
+forja_platform = { path = "engine/forja_platform" }
+forja_inspect = { path = "engine/forja_inspect" }
+
+# Rust estilo C: nenhum caminho com panic implícito.
+# Testes podem usar unwrap/indexação (ver clippy.toml).
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+indexing_slicing = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+arithmetic_side_effects = "deny"
+
+# Dev: código do workspace levemente otimizado, dependências otimizadas.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

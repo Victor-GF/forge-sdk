@@ -1,0 +1,17 @@
+[package]
+name = "corrida"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+forja_core.workspace = true
+forja_platform.workspace = true
+forja_inspect.workspace = true
+
+# Build final sem profiler: cargo build --release --no-default-features
+[features]
+default = ["inspect"]
+inspect = ["forja_inspect/ativo"]
+
+[lints]
+workspace = true
