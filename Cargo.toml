@@ -1,12 +1,14 @@
 [workspace]
 resolver = "3"
+# Pastas com nomes curtos; os crates mantêm o prefixo `forja_` (evita colisão com o `core` do
+# Rust e com crates externos como `os`/`mem`).
 members = [
-    "engine/forja_core",
-    "engine/forja_diag",
-    "engine/forja_mem",
-    "engine/forja_os",
-    "engine/forja_platform",
-    "engine/forja_inspect",
+    "engine/core",
+    "engine/diag",
+    "engine/mem",
+    "engine/os",
+    "engine/platform",
+    "engine/inspect",
     "games/racing",
     "tests/crash",
 ]
@@ -16,12 +18,12 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-forja_core = { path = "engine/forja_core" }
-forja_diag = { path = "engine/forja_diag" }
-forja_mem = { path = "engine/forja_mem" }
-forja_os = { path = "engine/forja_os" }
-forja_platform = { path = "engine/forja_platform" }
-forja_inspect = { path = "engine/forja_inspect" }
+forja_core = { path = "engine/core" }
+forja_diag = { path = "engine/diag" }
+forja_mem = { path = "engine/mem" }
+forja_os = { path = "engine/os" }
+forja_platform = { path = "engine/platform" }
+forja_inspect = { path = "engine/inspect" }
 
 # Rust estilo C: nenhum caminho com panic implícito.
 # Testes podem usar unwrap/indexação (ver clippy.toml).

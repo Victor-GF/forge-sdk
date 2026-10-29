@@ -21,19 +21,21 @@ ele faz deve estar à vista.
   frame, breadcrumbs, crash report). Nada de apelidos locais.
 - **Comentários, docs e mensagens de log em português.**
 - Tipos em `PascalCase`, funções e métodos em `snake_case`, constantes em `UPPER_CASE`.
-- Pastas: `engine/`, `games/`, `tests/`, `tools/`, `docs/`.
+- Pastas: `engine/`, `games/`, `tests/`, `tools/`, `docs/`. Dentro de `engine/`, pastas com
+  nome curto (`engine/mem`) e crates com prefixo (`forja_mem`): o prefixo evita colisão com o
+  `core` do Rust e com crates externos.
 
 ## Camada de SO
 
 - **Só o `forja_os` fala com o sistema operacional** (e o backend de janela do
   `forja_platform`). Nenhum outro crate depende de `windows-sys` ou `libc`.
-- O **contrato** é o `forja_os/src/lib.rs`: tipos e funções públicas, documentados com unidades,
+- O **contrato** é o `engine/os/src/lib.rs`: tipos e funções públicas, documentados com unidades,
   erros, thread-safety e "não aloca". Os backends (`windows.rs`, `linux.rs`) são escolhidos em
   tempo de compilação: sem trait, sem dispatch. Backend fora do contrato não compila.
 - O que difere de verdade entre sistemas fica escrito no contrato (ex.: granularidade de
   reserva é 64 KB no Windows e uma página no Linux). Código e testes não assumem valores do
   Windows.
-- Os **testes de contrato** (`forja_os/tests/contract.rs`) e os crash tests rodam nos dois
+- Os **testes de contrato** (`engine/os/tests/contract.rs`) e os crash tests rodam nos dois
   sistemas. Validação completa = Windows **e** WSL.
 - `forja_platform` segue o mesmo modelo para a janela. Linux ainda não tem janela; o jogo roda
   com `--headless N` (dt fixo, entrada roteirizada) para depuração e profiling.
