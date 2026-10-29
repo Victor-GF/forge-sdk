@@ -1,0 +1,158 @@
+# forja · projeto: o pipeline do jogo como dados.
+# Editado pelo forja-editor ou à mão. O jogo lê este arquivo ao iniciar e recusa
+# declarações inválidas (as mesmas que o editor mostra em vermelho).
+#
+# fase:    Input IA Controle Fisica Colisao Gameplay Direcao VFX Extract Render
+# a_cada:  roda a cada N ticks (60 Hz / N); ignorado no grafo de render
+# falha:   abortar | pular_tick | desligar | desligar_sem_rollback
+# le, escreve: Tabela ou Tabela(coluna,coluna) separadas por espaço
+
+[grafo tick]
+render = nao
+
+[sistema Input.Sample]
+fase = Input
+a_cada = 1
+falha = abortar
+ativo = sim
+le =
+escreve = InputSource PlayerIntent DebugFaults
+nota = teclado ou log de replay
+
+[sistema AI.Decide]
+fase = IA
+a_cada = 1
+falha = desligar
+ativo = sim
+le = VehicleHot(pos,vel) VehicleSim(track_idx,lateral) Track Obstacles(pos,radius,kind) RaceState(total) DebugFaults
+escreve = AIBrain
+nota = time-sliced: cada carro decide a 20 Hz
+
+[sistema Control.Merge]
+fase = Controle
+a_cada = 1
+falha = abortar
+ativo = sim
+le = PlayerIntent AIBrain VehicleHot(pos,vel,angle) VehicleSim(track_idx) Track
+escreve = VehicleControl
+nota = jogador ou IA -> mesma tabela
+
+[sistema Vehicle.Physics]
+fase = Fisica
+a_cada = 1
+falha = pular_tick
+ativo = sim
+le = VehicleControl Track CrashState(mode) DebugFaults
+escreve = VehicleHot VehicleSim Events
+nota = 4 substeps (240 Hz)
+
+[sistema Obstacles.Simulate]
+fase = Fisica
+a_cada = 1
+falha = abortar
+ativo = sim
+le =
+escreve = Obstacles(pos,vel,angle,spin,asleep)
+nota =
+
+[sistema Collision.Resolve]
+fase = Colisao
+a_cada = 1
+falha = abortar
+ativo = sim
+le = Track VehicleSim(track_idx,lateral) CrashState(mode,invuln) DebugFaults
+escreve = VehicleHot(pos,vel,angle) Obstacles(pos,vel,radius,mass,kind,asleep,hits,spin) Events
+nota =
+
+[sistema Crash.Update]
+fase = Colisao
+a_cada = 1
+falha = abortar
+ativo = sim
+le = Track VehicleSim(track_idx) Events
+escreve = CrashState VehicleHot
+nota = máquina de estados do crash
+
+[sistema Race.Rules]
+fase = Gameplay
+a_cada = 1
+falha = abortar
+ativo = sim
+le = Track VehicleSim(track_idx) DebugFaults
+escreve = RaceState Events
+nota =
+
+[sistema Race.Positions]
+fase = Gameplay
+a_cada = 6
+falha = abortar
+ativo = sim
+le =
+escreve = RaceState Events
+nota = 10 Hz
+
+[sistema Director]
+fase = Direcao
+a_cada = 1
+falha = desligar
+ativo = sim
+le = Events VehicleHot(pos,vel,angle) VehicleSim(boost) VehicleControl(boost) RaceState(lap,position,finished)
+escreve = CameraRig TimeControl VfxRequests
+nota = eventos -> câmera, tempo, VFX
+
+[sistema VFX.Simulate]
+fase = VFX
+a_cada = 1
+falha = desligar
+ativo = sim
+le = VfxRequests VehicleHot(pos,vel,angle) VehicleSim(drift,offroad) DebugFaults
+escreve = Particles
+nota =
+
+[sistema Render.Extract]
+fase = Extract
+a_cada = 1
+falha = abortar
+ativo = sim
+le = VehicleHot(pos,vel,angle) VehicleSim(boost) VehicleControl(brake,boost) CrashState(mode,invuln) Obstacles(pos,radius,kind,color,angle) Particles CameraRig RaceState
+escreve = RenderSnapshot
+nota = snapshot imutável
+
+[sistema Determinism.Hash]
+fase = Extract
+a_cada = 60
+falha = abortar
+ativo = sim
+le = VehicleHot
+escreve = InputSource
+nota = 1 Hz: compara com o replay
+
+[grafo frame]
+render = sim
+
+[sistema Render.Scene]
+fase = Render
+a_cada = 1
+falha = abortar
+ativo = sim
+le = RenderSnapshot StaticScene
+escreve = Framebuffer
+nota = cenário assado + obstáculos
+
+[sistema Render.Cars]
+fase = Render
+a_cada = 1
+falha = desligar_sem_rollback
+ativo = sim
+le = RenderSnapshot StaticScene
+escreve = Framebuffer
+nota = pass hero: clearcoat + reflexo
+
+[sistema Render.VFX]
+fase = Render
+a_cada = 1
+falha = desligar_sem_rollback
+ativo = sim
+le = RenderSnapshot
+escreve = Framebuffer
+nota = partículas, estilizado, grade cinema

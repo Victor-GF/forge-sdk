@@ -1,0 +1,11 @@
+[workspace]
+members = ["forja", "corrida", "editor"]
+resolver = "2"
+
+# Em debug o renderer por software fica lento demais sem otimização.
+[profile.dev]
+opt-level = 2
+
+[profile.release]
+debug = true      # gera .pdb: minidumps do kit de crash ficam simbolizados
+panic = "unwind"  # o scheduler depende de catch_unwind para as políticas de falha

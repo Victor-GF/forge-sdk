@@ -1,0 +1,8 @@
+[package]
+name = "forja-editor"
+version = "0.1.0"
+edition = "2021"
+description = "Editor do pipeline da forja: sistemas, acessos e políticas como tabela, antes de rodar o jogo"
+
+[dependencies]
+forja = { path = "../forja" }

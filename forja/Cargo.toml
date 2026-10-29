@@ -1,0 +1,7 @@
+[package]
+name = "forja"
+version = "0.1.0"
+edition = "2021"
+description = "Núcleo de engine declarativo: tabelas, sistemas com acesso declarado, scheduler, profiler e kit de crash"
+
+[dependencies]

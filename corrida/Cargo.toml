@@ -1,0 +1,8 @@
+[package]
+name = "corrida"
+version = "0.1.0"
+edition = "2021"
+description = "Fatia vertical de jogo de corrida construída sobre a forja"
+
+[dependencies]
+forja = { path = "../forja" }

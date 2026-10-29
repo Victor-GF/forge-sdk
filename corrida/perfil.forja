@@ -1,0 +1,311 @@
+# forja · perfil: gerado pelo jogo a cada execução. Não editar.
+# Catálogo das tabelas como existem no código + medições da última execução.
+
+[perfil]
+origem = corrida (janela), 23797 frames
+implementados = Input.Sample AI.Decide Control.Merge Vehicle.Physics Obstacles.Simulate Collision.Resolve Crash.Update Race.Rules Race.Positions Director VFX.Simulate Render.Extract Determinism.Hash Render.Scene Render.Cars Render.VFX
+
+[tabela Track]
+vida = estatica
+layout = SoA
+linha = 0
+colunas = pos:8 tan:8 s:4 curv:4
+linhas = 1770
+esparsa = sim
+externa = nao
+invariantes =
+nota = spline cozida; consulta local
+
+[tabela StaticScene]
+vida = estatica
+layout = AoS
+linha = 4
+colunas = rgb:4
+linhas = 9437184
+esparsa = sim
+externa = nao
+invariantes =
+nota = cenário cozido (iluminação baked)
+
+[tabela VehicleHot]
+vida = sessao
+layout = SoA
+linha = 0
+colunas = pos:8 vel:8 angle:4 ang_vel:4
+linhas = 4
+esparsa = nao
+externa = nao
+invariantes = finito
+nota = lida por quase todos
+
+[tabela VehicleSim]
+vida = sessao
+layout = SoA
+linha = 0
+colunas = steer:4 slip:4 drift:4 track_idx:4 lateral:4 offroad:1 boost:4
+linhas = 4
+esparsa = nao
+externa = nao
+invariantes =
+nota =
+
+[tabela VehicleControl]
+vida = sessao
+layout = AoS
+linha = 16
+colunas = throttle:4 brake:4 steer:4 handbrake:1 boost:1
+linhas = 4
+esparsa = nao
+externa = nao
+invariantes =
+nota = jogador OU IA
+
+[tabela PlayerIntent]
+vida = sessao
+layout = AoS
+linha = 20
+colunas = controls:14 autopilot:1
+linhas = 1
+esparsa = nao
+externa = nao
+invariantes =
+nota =
+
+[tabela AIBrain]
+vida = sessao
+layout = AoS
+linha = 24
+colunas = target_lat:4 target_speed:4 look:4 aggression:4 avoid:4 plan_tick:4
+linhas = 4
+esparsa = nao
+externa = nao
+invariantes =
+nota =
+
+[tabela CrashState]
+vida = sessao
+layout = AoS
+linha = 40
+colunas = mode:1 timer:4 impact_speed:4 impact_point:8 normal:8 invuln:4 count:4 seed:4
+linhas = 4
+esparsa = nao
+externa = nao
+invariantes =
+nota = fria; quente no crash
+
+[tabela Obstacles]
+vida = sessao
+layout = AoS
+linha = 64
+colunas = pos:8 vel:8 radius:4 mass:4 kind:1 asleep:1 color:4 angle:4 spin:4 home:8 hits:4 label:12
+linhas = 44
+esparsa = nao
+externa = nao
+invariantes = finito
+nota = quente+frio misturados
+
+[tabela RaceState]
+vida = sessao
+layout = SoA
+linha = 0
+colunas = lap:4 s:4 total:4 position:1 lap_start:4 best:4 finished:1
+linhas = 4
+esparsa = nao
+externa = nao
+invariantes = posições válidas
+nota =
+
+[tabela Events]
+vida = transitoria
+layout = AoS
+linha = 28
+colunas = kind:1 car:1 other:1 pos:8 dir:8 mag:4 src:2
+linhas = 0
+esparsa = nao
+externa = nao
+invariantes =
+nota = acoplamento do jogo
+
+[tabela VfxRequests]
+vida = transitoria
+layout = AoS
+linha = 28
+colunas = kind:1 pos:8 dir:8 mag:4 color:4
+linhas = 0
+esparsa = nao
+externa = nao
+invariantes =
+nota =
+
+[tabela CameraRig]
+vida = sessao
+layout = AoS
+linha = 76
+colunas = pos:8 zoom:4 angle:4 shake:12 cine:16 fx:12 director:24
+linhas = 1
+esparsa = nao
+externa = nao
+invariantes =
+nota =
+
+[tabela TimeControl]
+vida = sessao
+layout = AoS
+linha = 8
+colunas = target:4 hold:4
+linhas = 1
+esparsa = nao
+externa = sim
+invariantes =
+nota = lido pelo loop principal
+
+[tabela Particles]
+vida = sessao
+layout = SoA
+linha = 0
+colunas = pos:8 vel:8 life:4 max_life:4 size:4 color:4 kind:1 rot:4
+linhas = 0
+esparsa = nao
+externa = nao
+invariantes = pool consistente
+nota = pool SoA
+
+[tabela RenderSnapshot]
+vida = sessao
+layout = AoS
+linha = 36
+colunas = snap:36
+linhas = 52
+esparsa = nao
+externa = nao
+invariantes =
+nota = cópia imutável p/ render
+
+[tabela Framebuffer]
+vida = sessao
+layout = AoS
+linha = 4
+colunas = bgra:4
+linhas = 921600
+esparsa = sim
+externa = sim
+invariantes =
+nota = lido pela plataforma
+
+[tabela InputSource]
+vida = sessao
+layout = AoS
+linha = 88
+colunas = bits:8 replay:32
+linhas = 1
+esparsa = nao
+externa = nao
+invariantes =
+nota =
+
+[tabela DebugFaults]
+vida = transitoria
+layout = AoS
+linha = 4
+colunas = bits:4
+linhas = 1
+esparsa = nao
+externa = nao
+invariantes =
+nota = falhas injetadas (F5-F9)
+
+[medicao Input.Sample]
+ms = 0.001870
+execucoes = 6078
+falhas = 0
+acessou = InputSource PlayerIntent DebugFaults
+
+[medicao AI.Decide]
+ms = 0.005811
+execucoes = 6078
+falhas = 0
+acessou = VehicleHot VehicleSim Track Obstacles RaceState DebugFaults AIBrain
+
+[medicao Control.Merge]
+ms = 0.004313
+execucoes = 6078
+falhas = 0
+acessou = PlayerIntent AIBrain VehicleHot VehicleSim Track VehicleControl
+
+[medicao Vehicle.Physics]
+ms = 0.010511
+execucoes = 6078
+falhas = 0
+acessou = VehicleControl Track CrashState DebugFaults VehicleHot VehicleSim Events
+
+[medicao Obstacles.Simulate]
+ms = 0.001369
+execucoes = 6078
+falhas = 0
+acessou = Obstacles
+
+[medicao Collision.Resolve]
+ms = 0.003629
+execucoes = 6078
+falhas = 0
+acessou = Track VehicleSim CrashState DebugFaults VehicleHot Obstacles Events
+
+[medicao Crash.Update]
+ms = 0.001586
+execucoes = 6078
+falhas = 0
+acessou = Track VehicleSim Events CrashState VehicleHot
+
+[medicao Race.Rules]
+ms = 0.001913
+execucoes = 6078
+falhas = 0
+acessou = Track VehicleSim DebugFaults RaceState Events
+
+[medicao Race.Positions]
+ms = 0.001708
+execucoes = 1013
+falhas = 0
+acessou = RaceState Events
+
+[medicao Director]
+ms = 0.003420
+execucoes = 6078
+falhas = 0
+acessou = Events VehicleHot VehicleSim VehicleControl RaceState CameraRig TimeControl VfxRequests
+
+[medicao VFX.Simulate]
+ms = 0.003746
+execucoes = 6078
+falhas = 0
+acessou = VfxRequests VehicleHot VehicleSim DebugFaults Particles
+
+[medicao Render.Extract]
+ms = 0.002605
+execucoes = 6078
+falhas = 0
+acessou = VehicleHot VehicleSim VehicleControl CrashState Obstacles Particles CameraRig RaceState RenderSnapshot
+
+[medicao Determinism.Hash]
+ms = 0.001221
+execucoes = 102
+falhas = 0
+acessou = VehicleHot InputSource
+
+[medicao Render.Scene]
+ms = 2.413458
+execucoes = 23797
+falhas = 0
+acessou = RenderSnapshot StaticScene Framebuffer
+
+[medicao Render.Cars]
+ms = 0.181907
+execucoes = 23797
+falhas = 0
+acessou = RenderSnapshot StaticScene Framebuffer
+
+[medicao Render.VFX]
+ms = 0.020243
+execucoes = 23797
+falhas = 0
+acessou = RenderSnapshot Framebuffer
