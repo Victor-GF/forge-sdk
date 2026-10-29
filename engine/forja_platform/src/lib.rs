@@ -6,7 +6,10 @@
 //!
 //! Limitação conhecida: enquanto o usuário arrasta ou redimensiona a janela, o Windows
 //! roda um loop modal próprio e o frame do jogo para até ele soltar.
+//!
+//! Não aloca: textos para o Win32 são convertidos para UTF-16 em buffers na stack.
 
+pub mod arquivo;
 pub mod input;
 
 use core::ptr::{null, null_mut};
@@ -45,15 +48,20 @@ pub struct JanelaDesc<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlatformErro {
+    /// Título maior que `TITULO_MAX` em UTF-16.
+    TituloLongo,
     RegistrarClasse,
     CriarJanela,
 }
 
+/// Tamanho máximo de título (em unidades UTF-16, com o 0 final).
+pub const TITULO_MAX: usize = 256;
+const CLASSE_NOME: &str = "forja_janela";
+const CLASSE_MAX: usize = 32;
+
 pub struct Platform {
     pub hwnd: HWND,
     pub hinstance: HINSTANCE,
-    /// Nome da classe da janela em UTF-16 (terminado em 0), para `platform_shutdown`.
-    pub classe: Vec<u16>,
 
     /// Fica `false` quando o usuário fecha a janela.
     pub rodando: bool,
@@ -113,13 +121,26 @@ pub fn platform_esperar_frame(p: &Platform, alvo_segundos: f64) {
 
 // ---------------------------------------------------------------- janela
 
-fn utf16(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(core::iter::once(0)).collect()
+/// Converte `s` para UTF-16 terminado em 0 dentro de `buf`. `None` se não couber.
+pub(crate) fn utf16_em<'b>(s: &str, buf: &'b mut [u16]) -> Option<&'b [u16]> {
+    let mut n: usize = 0;
+    for c in s.encode_utf16() {
+        *buf.get_mut(n)? = c;
+        n = n.checked_add(1)?;
+    }
+    *buf.get_mut(n)? = 0;
+    buf.get(..=n)
 }
 
 pub fn platform_init(desc: &JanelaDesc) -> Result<Platform, PlatformErro> {
-    let classe = utf16("forja_janela");
-    let titulo = utf16(desc.titulo);
+    let mut classe_buf = [0u16; CLASSE_MAX];
+    let mut titulo_buf = [0u16; TITULO_MAX];
+    let Some(classe) = utf16_em(CLASSE_NOME, &mut classe_buf) else {
+        return Err(PlatformErro::RegistrarClasse);
+    };
+    let Some(titulo) = utf16_em(desc.titulo, &mut titulo_buf) else {
+        return Err(PlatformErro::TituloLongo);
+    };
     let largura = i32::try_from(desc.largura).unwrap_or(i32::MAX);
     let altura = i32::try_from(desc.altura).unwrap_or(i32::MAX);
 
@@ -185,7 +206,6 @@ pub fn platform_init(desc: &JanelaDesc) -> Result<Platform, PlatformErro> {
     Ok(Platform {
         hwnd,
         hinstance,
-        classe,
         rodando: true,
         focado: true,
         largura: desc.largura,
@@ -200,16 +220,23 @@ pub fn platform_init(desc: &JanelaDesc) -> Result<Platform, PlatformErro> {
 }
 
 pub fn platform_shutdown(p: Platform) {
-    // SAFETY: `hwnd` e `classe` vieram de `platform_init` e ainda são válidos.
+    let mut classe_buf = [0u16; CLASSE_MAX];
+    // SAFETY: `hwnd` veio de `platform_init` e ainda é válido; `classe` termina em 0.
     unsafe {
         DestroyWindow(p.hwnd);
-        UnregisterClassW(p.classe.as_ptr(), p.hinstance);
+        if let Some(classe) = utf16_em(CLASSE_NOME, &mut classe_buf) {
+            UnregisterClassW(classe.as_ptr(), p.hinstance);
+        }
         timeEndPeriod(1);
     }
 }
 
+/// Títulos maiores que `TITULO_MAX` são ignorados.
 pub fn platform_titulo(p: &Platform, titulo: &str) {
-    let t = utf16(titulo);
+    let mut buf = [0u16; TITULO_MAX];
+    let Some(t) = utf16_em(titulo, &mut buf) else {
+        return;
+    };
     // SAFETY: `t` termina em 0 e vive durante a chamada.
     unsafe { SetWindowTextW(p.hwnd, t.as_ptr()) };
 }
@@ -315,6 +342,13 @@ mod tests {
     fn roda_para_tras_e_negativa() {
         let w = ((-120i16 as u16 as usize) << 16) as WPARAM;
         assert_eq!(roda_de_wparam(w), -120);
+    }
+
+    #[test]
+    fn utf16_termina_em_zero_e_respeita_buffer() {
+        let mut buf = [0xFFFFu16; 4];
+        assert_eq!(utf16_em("ab", &mut buf), Some(&[0x61, 0x62, 0][..]));
+        assert_eq!(utf16_em("abcd", &mut buf), None); // falta espaço para o 0
     }
 
     #[test]

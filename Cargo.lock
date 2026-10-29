@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "forja_core",
  "forja_inspect",
+ "forja_mem",
  "forja_platform",
 ]
 
@@ -18,6 +19,17 @@ version = "0.1.0"
 [[package]]
 name = "forja_inspect"
 version = "0.1.0"
+dependencies = [
+ "forja_core",
+]
+
+[[package]]
+name = "forja_mem"
+version = "0.1.0"
+dependencies = [
+ "forja_core",
+ "windows-sys",
+]
 
 [[package]]
 name = "forja_platform"

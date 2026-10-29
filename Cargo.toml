@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "engine/forja_core",
+    "engine/forja_mem",
     "engine/forja_platform",
     "engine/forja_inspect",
     "jogos/corrida",
@@ -13,6 +14,7 @@ edition = "2024"
 
 [workspace.dependencies]
 forja_core = { path = "engine/forja_core" }
+forja_mem = { path = "engine/forja_mem" }
 forja_platform = { path = "engine/forja_platform" }
 forja_inspect = { path = "engine/forja_inspect" }
 

@@ -1,0 +1,11 @@
+[package]
+name = "forja_mem"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+forja_core.workspace = true
+windows-sys = { version = "0.59", features = ["Win32_System_Memory"] }
+
+[lints]
+workspace = true

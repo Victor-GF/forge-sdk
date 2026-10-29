@@ -13,11 +13,33 @@ e que nenhum custo fique escondido.
    é definida na criação e documentada.
 5. **Ferramentas de desenvolvimento somem no build final** (features desligáveis, `cfg!` constante).
 
+## Memória
+
+- **Uma chamada ao SO.** `memoria_init` faz um único `VirtualAlloc` com o orçamento total do
+  jogo. Tudo sai dali.
+- **Cada thread trabalha na sua mesa** (`Mesa`): arenas `persistente` (programa inteiro),
+  `fase` (zera ao trocar de fase/pista) e `frame` (zera todo frame). Arenas são `Send` mas
+  nunca `Sync`: podem mudar de thread, nunca ser compartilhadas. O compilador garante.
+- **Malloc bloqueado.** O alocador global (`forja_mem::global`) só atende a inicialização da
+  std, num buffer fixo. Depois de `global_travar()`, qualquer `Vec`, `String`, `Box`,
+  `format!` (nosso ou de dependência) aborta o programa. No debugger, o abort mostra a pilha.
+- **Containers da std não são usados** fora de testes. No lugar:
+  - listas e tabelas: `arena_slice` (capacidade fixa decidida na criação)
+  - texto: `Texto` sobre um buffer da stack ou da arena + `write!`
+  - log: `log_info(format_args!(...))`
+  - arquivos: `forja_platform::arquivo` (a `std::fs` aloca no Windows)
+- **Stack**: 1 MB na thread principal do Windows. Buffers grandes vão para arena.
+- **Exceção aos genéricos:** `arena_slice`/`arena_valor` (`T: Copy`), para entregar memória
+  tipada sem `unsafe` no jogo.
+- **Exceção ao estado global e às traits:** o alocador global (`unsafe impl GlobalAlloc`),
+  exigido pela linguagem.
+
 ## Usa / não usa
 
 | Usa | Não usa |
 |---|---|
 | `struct` `#[repr(C)]` com campos `pub` | traits próprias, `impl Trait`, `dyn` |
+| arenas da mesa, `Texto`, buffers na stack | `Vec`, `String`, `Box`, `format!`, `std::fs` |
 | funções livres `modulo_verbo(alvo, ...)` | genéricos e macros próprias |
 | slices `&[T]`, iteradores simples (`iter`, `zip`) | `Rc`, `RefCell`, `Box<dyn>`, closures guardadas |
 | `let Some(x) = ... else { return ... }`, `get()` | `unwrap`, `expect`, indexação `a[i]`, slicing `a[i..j]` |
