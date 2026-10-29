@@ -1,15 +1,15 @@
 //! Plataforma: janela, input e relógio via Win32 direto.
 //!
-//! O jogo é dono do loop: chama `platform_poll` uma vez por frame e decide o resto.
+//! O jogo é dono do loop: chama `Platform::poll` uma vez por frame e decide o resto.
 //! Nenhum estado global: a janela não guarda ponteiro para `Platform`; o input é lido
-//! direto da fila de mensagens em `platform_poll`, e tamanho/foco são consultados lá.
+//! direto da fila de mensagens em `poll`, e tamanho/foco são consultados lá.
 //!
 //! Limitação conhecida: enquanto o usuário arrasta ou redimensiona a janela, o Windows
 //! roda um loop modal próprio e o frame do jogo para até ele soltar.
 //!
 //! Não aloca: textos para o Win32 são convertidos para UTF-16 em buffers na stack.
 
-pub mod arquivo;
+pub mod file;
 pub mod input;
 
 use core::ptr::{null, null_mut};
@@ -33,96 +33,71 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_OVERLAPPEDWINDOW,
 };
 
-use input::{
-    INPUT_VAZIO, Input, MOUSE_DIREITO, MOUSE_ESQUERDO, MOUSE_MEIO, input_frame_inicio,
-    input_mouse_evento, input_mouse_mover, input_roda_evento, input_soltar_tudo,
-    input_tecla_evento,
-};
+use input::{Input, Key, MouseButton};
 
-pub struct JanelaDesc<'a> {
-    pub titulo: &'a str,
+pub struct WindowDesc<'a> {
+    pub title: &'a str,
     /// Tamanho da área cliente, em pixels físicos.
-    pub largura: u32,
-    pub altura: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PlatformErro {
-    /// Título maior que `TITULO_MAX` em UTF-16.
-    TituloLongo,
-    RegistrarClasse,
-    CriarJanela,
+pub enum PlatformError {
+    /// Título maior que `TITLE_MAX` em UTF-16.
+    TitleTooLong,
+    RegisterClass,
+    CreateWindow,
 }
 
 /// Tamanho máximo de título (em unidades UTF-16, com o 0 final).
-pub const TITULO_MAX: usize = 256;
-const CLASSE_NOME: &str = "forja_janela";
-const CLASSE_MAX: usize = 32;
+pub const TITLE_MAX: usize = 256;
+const CLASS_NAME: &str = "forja_window";
+const CLASS_NAME_MAX: usize = 32;
 
+/// Janela aberta. Só existe depois de `init` dar certo; `shutdown` consome o valor.
 pub struct Platform {
     pub hwnd: HWND,
     pub hinstance: HINSTANCE,
 
     /// Fica `false` quando o usuário fecha a janela.
-    pub rodando: bool,
-    pub focado: bool,
+    pub running: bool,
+    pub focused: bool,
     /// Área cliente atual; 0x0 quando minimizada.
-    pub largura: u32,
-    pub altura: u32,
+    pub width: u32,
+    pub height: u32,
     /// `true` no frame em que o tamanho mudou.
-    pub redimensionou: bool,
+    pub resized: bool,
 
     pub input: Input,
 
-    pub ticks_por_segundo: u64,
-    /// Tick em que o frame atual começou (`platform_poll`).
-    pub frame_inicio: u64,
-    pub frame_indice: u64,
-    /// Segundos desde o `platform_poll` anterior. Sem limite: o jogo decide se limita.
+    pub ticks_per_second: u64,
+    /// Tick em que o frame atual começou (`poll`).
+    pub frame_start: u64,
+    pub frame_index: u64,
+    /// Segundos desde o `poll` anterior. Sem limite: o jogo decide se limita.
     pub dt: f32,
 }
 
 // ---------------------------------------------------------------- relógio
 
 /// Contador de alta resolução (QueryPerformanceCounter).
-pub fn platform_ticks() -> u64 {
+pub fn ticks() -> u64 {
     let mut v: i64 = 0;
     // SAFETY: ponteiro para variável local válida.
     unsafe { QueryPerformanceCounter(&mut v) };
     u64::try_from(v).unwrap_or(0)
 }
 
-pub fn ticks_para_segundos(ticks: u64, ticks_por_segundo: u64) -> f64 {
-    if ticks_por_segundo == 0 {
+pub fn ticks_to_seconds(ticks: u64, ticks_per_second: u64) -> f64 {
+    if ticks_per_second == 0 {
         return 0.0;
     }
-    ticks as f64 / ticks_por_segundo as f64
+    ticks as f64 / ticks_per_second as f64
 }
-
-/// Dorme até `alvo_segundos` depois do início do frame. Usa `Sleep` enquanto falta
-/// bastante e gira (spin) nos últimos ~2 ms, porque `Sleep` não é preciso.
-pub fn platform_esperar_frame(p: &Platform, alvo_segundos: f64) {
-    let alvo_ticks = (alvo_segundos * p.ticks_por_segundo as f64) as u64;
-    let fim = p.frame_inicio.saturating_add(alvo_ticks);
-    loop {
-        let agora = platform_ticks();
-        if agora >= fim {
-            return;
-        }
-        let resto_ms = ticks_para_segundos(fim.saturating_sub(agora), p.ticks_por_segundo) * 1000.0;
-        if resto_ms > 2.0 {
-            // SAFETY: chamada simples sem ponteiros.
-            unsafe { Sleep((resto_ms - 1.5) as u32) };
-        } else {
-            core::hint::spin_loop();
-        }
-    }
-}
-
-// ---------------------------------------------------------------- janela
 
 /// Converte `s` para UTF-16 terminado em 0 dentro de `buf`. `None` se não couber.
-pub(crate) fn utf16_em<'b>(s: &str, buf: &'b mut [u16]) -> Option<&'b [u16]> {
+pub(crate) fn utf16_into<'b>(s: &str, buf: &'b mut [u16]) -> Option<&'b [u16]> {
     let mut n: usize = 0;
     for c in s.encode_utf16() {
         *buf.get_mut(n)? = c;
@@ -132,170 +107,195 @@ pub(crate) fn utf16_em<'b>(s: &str, buf: &'b mut [u16]) -> Option<&'b [u16]> {
     buf.get(..=n)
 }
 
-pub fn platform_init(desc: &JanelaDesc) -> Result<Platform, PlatformErro> {
-    let mut classe_buf = [0u16; CLASSE_MAX];
-    let mut titulo_buf = [0u16; TITULO_MAX];
-    let Some(classe) = utf16_em(CLASSE_NOME, &mut classe_buf) else {
-        return Err(PlatformErro::RegistrarClasse);
-    };
-    let Some(titulo) = utf16_em(desc.titulo, &mut titulo_buf) else {
-        return Err(PlatformErro::TituloLongo);
-    };
-    let largura = i32::try_from(desc.largura).unwrap_or(i32::MAX);
-    let altura = i32::try_from(desc.altura).unwrap_or(i32::MAX);
+// ---------------------------------------------------------------- janela
 
-    // SAFETY: chamadas Win32 com ponteiros para dados locais vivos durante a chamada;
-    // `classe` e `titulo` terminam em 0.
-    let (hwnd, hinstance) = unsafe {
-        // Pixels físicos em telas com escala (pode falhar se já foi definido; tudo bem).
-        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        // Resolução de 1 ms para `Sleep` em `platform_esperar_frame`.
-        timeBeginPeriod(1);
-
-        let hinstance = GetModuleHandleW(null());
-        let wc = WNDCLASSEXW {
-            cbSize: size_of::<WNDCLASSEXW>() as u32,
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(janela_proc),
-            cbClsExtra: 0,
-            cbWndExtra: 0,
-            hInstance: hinstance,
-            hIcon: null_mut(),
-            hCursor: LoadCursorW(null_mut(), IDC_ARROW),
-            hbrBackground: GetStockObject(BLACK_BRUSH),
-            lpszMenuName: null(),
-            lpszClassName: classe.as_ptr(),
-            hIconSm: null_mut(),
+impl Platform {
+    pub fn init(desc: &WindowDesc) -> Result<Platform, PlatformError> {
+        let mut class_buf = [0u16; CLASS_NAME_MAX];
+        let mut title_buf = [0u16; TITLE_MAX];
+        let Some(class) = utf16_into(CLASS_NAME, &mut class_buf) else {
+            return Err(PlatformError::RegisterClass);
         };
-        if RegisterClassExW(&wc) == 0 {
-            timeEndPeriod(1);
-            return Err(PlatformErro::RegistrarClasse);
-        }
+        let Some(title) = utf16_into(desc.title, &mut title_buf) else {
+            return Err(PlatformError::TitleTooLong);
+        };
+        let width = i32::try_from(desc.width).unwrap_or(i32::MAX);
+        let height = i32::try_from(desc.height).unwrap_or(i32::MAX);
 
-        let estilo = WS_OVERLAPPEDWINDOW;
-        let mut r = RECT { left: 0, top: 0, right: largura, bottom: altura };
-        AdjustWindowRectEx(&mut r, estilo, 0, 0);
+        // SAFETY: chamadas Win32 com ponteiros para dados locais vivos durante a chamada;
+        // `class` e `title` terminam em 0.
+        let (hwnd, hinstance) = unsafe {
+            // Pixels físicos em telas com escala (pode falhar se já foi definido; tudo bem).
+            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            // Resolução de 1 ms para `Sleep` em `wait_frame`.
+            timeBeginPeriod(1);
 
-        let hwnd = CreateWindowExW(
-            0,
-            classe.as_ptr(),
-            titulo.as_ptr(),
-            estilo,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            r.right.saturating_sub(r.left),
-            r.bottom.saturating_sub(r.top),
-            null_mut(),
-            null_mut(),
+            let hinstance = GetModuleHandleW(null());
+            let wc = WNDCLASSEXW {
+                cbSize: size_of::<WNDCLASSEXW>() as u32,
+                style: CS_HREDRAW | CS_VREDRAW,
+                lpfnWndProc: Some(window_proc),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: hinstance,
+                hIcon: null_mut(),
+                hCursor: LoadCursorW(null_mut(), IDC_ARROW),
+                hbrBackground: GetStockObject(BLACK_BRUSH),
+                lpszMenuName: null(),
+                lpszClassName: class.as_ptr(),
+                hIconSm: null_mut(),
+            };
+            if RegisterClassExW(&wc) == 0 {
+                timeEndPeriod(1);
+                return Err(PlatformError::RegisterClass);
+            }
+
+            let style = WS_OVERLAPPEDWINDOW;
+            let mut r = RECT { left: 0, top: 0, right: width, bottom: height };
+            AdjustWindowRectEx(&mut r, style, 0, 0);
+
+            let hwnd = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                title.as_ptr(),
+                style,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                r.right.saturating_sub(r.left),
+                r.bottom.saturating_sub(r.top),
+                null_mut(),
+                null_mut(),
+                hinstance,
+                null(),
+            );
+            if hwnd.is_null() {
+                UnregisterClassW(class.as_ptr(), hinstance);
+                timeEndPeriod(1);
+                return Err(PlatformError::CreateWindow);
+            }
+            ShowWindow(hwnd, SW_SHOW);
+            (hwnd, hinstance)
+        };
+
+        let mut freq: i64 = 0;
+        // SAFETY: ponteiro para variável local válida.
+        unsafe { QueryPerformanceFrequency(&mut freq) };
+
+        Ok(Platform {
+            hwnd,
             hinstance,
-            null(),
-        );
-        if hwnd.is_null() {
-            UnregisterClassW(classe.as_ptr(), hinstance);
+            running: true,
+            focused: true,
+            width: desc.width,
+            height: desc.height,
+            resized: false,
+            input: Input::EMPTY,
+            ticks_per_second: u64::try_from(freq).unwrap_or(1).max(1),
+            frame_start: ticks(),
+            frame_index: 0,
+            dt: 0.0,
+        })
+    }
+
+    pub fn shutdown(self) {
+        let mut class_buf = [0u16; CLASS_NAME_MAX];
+        // SAFETY: `hwnd` veio de `init` e ainda é válido; `class` termina em 0.
+        unsafe {
+            DestroyWindow(self.hwnd);
+            if let Some(class) = utf16_into(CLASS_NAME, &mut class_buf) {
+                UnregisterClassW(class.as_ptr(), self.hinstance);
+            }
             timeEndPeriod(1);
-            return Err(PlatformErro::CriarJanela);
         }
-        ShowWindow(hwnd, SW_SHOW);
-        (hwnd, hinstance)
-    };
+    }
 
-    let mut freq: i64 = 0;
-    // SAFETY: ponteiro para variável local válida.
-    unsafe { QueryPerformanceFrequency(&mut freq) };
+    /// Títulos maiores que `TITLE_MAX` são ignorados.
+    pub fn set_title(&self, title: &str) {
+        let mut buf = [0u16; TITLE_MAX];
+        let Some(t) = utf16_into(title, &mut buf) else {
+            return;
+        };
+        // SAFETY: `t` termina em 0 e vive durante a chamada.
+        unsafe { SetWindowTextW(self.hwnd, t.as_ptr()) };
+    }
 
-    Ok(Platform {
-        hwnd,
-        hinstance,
-        rodando: true,
-        focado: true,
-        largura: desc.largura,
-        altura: desc.altura,
-        redimensionou: false,
-        input: INPUT_VAZIO,
-        ticks_por_segundo: u64::try_from(freq).unwrap_or(1).max(1),
-        frame_inicio: platform_ticks(),
-        frame_indice: 0,
-        dt: 0.0,
-    })
-}
+    /// Processa as mensagens do SO e atualiza input, tamanho, foco e tempo.
+    /// Devolve `false` quando a janela foi fechada.
+    pub fn poll(&mut self) -> bool {
+        self.input.begin_frame();
 
-pub fn platform_shutdown(p: Platform) {
-    let mut classe_buf = [0u16; CLASSE_MAX];
-    // SAFETY: `hwnd` veio de `platform_init` e ainda é válido; `classe` termina em 0.
-    unsafe {
-        DestroyWindow(p.hwnd);
-        if let Some(classe) = utf16_em(CLASSE_NOME, &mut classe_buf) {
-            UnregisterClassW(classe.as_ptr(), p.hinstance);
+        // SAFETY: MSG é uma struct C só com inteiros e ponteiros; zero é um valor válido.
+        let mut msg: MSG = unsafe { core::mem::zeroed() };
+        // SAFETY: `msg` é local e válido; hwnd nulo = todas as mensagens da thread.
+        while unsafe { PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) } != 0 {
+            let input = &mut self.input;
+            match msg.message {
+                WM_QUIT => self.running = false,
+                WM_KEYDOWN | WM_SYSKEYDOWN => input.key_event(key_from_wparam(msg.wParam), true),
+                WM_KEYUP | WM_SYSKEYUP => input.key_event(key_from_wparam(msg.wParam), false),
+                WM_MOUSEMOVE => input.mouse_move(lparam_x(msg.lParam), lparam_y(msg.lParam)),
+                WM_LBUTTONDOWN => input.mouse_button_event(MouseButton::Left, true),
+                WM_LBUTTONUP => input.mouse_button_event(MouseButton::Left, false),
+                WM_RBUTTONDOWN => input.mouse_button_event(MouseButton::Right, true),
+                WM_RBUTTONUP => input.mouse_button_event(MouseButton::Right, false),
+                WM_MBUTTONDOWN => input.mouse_button_event(MouseButton::Middle, true),
+                WM_MBUTTONUP => input.mouse_button_event(MouseButton::Middle, false),
+                WM_MOUSEWHEEL => input.wheel_event(wheel_from_wparam(msg.wParam)),
+                _ => {}
+            }
+            // Sem TranslateMessage: o MVP não tem entrada de texto (WM_CHAR).
+            // SAFETY: `msg` veio de PeekMessageW.
+            unsafe { DispatchMessageW(&msg) };
         }
-        timeEndPeriod(1);
+
+        // SAFETY: chamada sem ponteiros.
+        let focused = unsafe { GetForegroundWindow() } == self.hwnd;
+        if self.focused && !focused {
+            self.input.release_all();
+        }
+        self.focused = focused;
+
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        // SAFETY: `r` é local e válido.
+        unsafe { GetClientRect(self.hwnd, &mut r) };
+        let width = u32::try_from(r.right.saturating_sub(r.left)).unwrap_or(0);
+        let height = u32::try_from(r.bottom.saturating_sub(r.top)).unwrap_or(0);
+        self.resized = width != self.width || height != self.height;
+        self.width = width;
+        self.height = height;
+
+        let now = ticks();
+        self.dt = ticks_to_seconds(now.saturating_sub(self.frame_start), self.ticks_per_second) as f32;
+        self.frame_start = now;
+        self.frame_index = self.frame_index.wrapping_add(1);
+
+        self.running
+    }
+
+    /// Dorme até `target_seconds` depois do início do frame. Usa `Sleep` enquanto falta
+    /// bastante e gira (spin) nos últimos ~2 ms, porque `Sleep` não é preciso.
+    pub fn wait_frame(&self, target_seconds: f64) {
+        let target_ticks = (target_seconds * self.ticks_per_second as f64) as u64;
+        let end = self.frame_start.saturating_add(target_ticks);
+        loop {
+            let now = ticks();
+            if now >= end {
+                return;
+            }
+            let left_ms = ticks_to_seconds(end.saturating_sub(now), self.ticks_per_second) * 1000.0;
+            if left_ms > 2.0 {
+                // SAFETY: chamada simples sem ponteiros.
+                unsafe { Sleep((left_ms - 1.5) as u32) };
+            } else {
+                core::hint::spin_loop();
+            }
+        }
     }
 }
 
-/// Títulos maiores que `TITULO_MAX` são ignorados.
-pub fn platform_titulo(p: &Platform, titulo: &str) {
-    let mut buf = [0u16; TITULO_MAX];
-    let Some(t) = utf16_em(titulo, &mut buf) else {
-        return;
-    };
-    // SAFETY: `t` termina em 0 e vive durante a chamada.
-    unsafe { SetWindowTextW(p.hwnd, t.as_ptr()) };
-}
-
-/// Processa as mensagens do SO e atualiza input, tamanho, foco e tempo.
-/// Devolve `false` quando a janela foi fechada.
-pub fn platform_poll(p: &mut Platform) -> bool {
-    input_frame_inicio(&mut p.input);
-
-    // SAFETY: MSG é uma struct C só com inteiros e ponteiros; zero é um valor válido.
-    let mut msg: MSG = unsafe { core::mem::zeroed() };
-    // SAFETY: `msg` é local e válido; hwnd nulo = todas as mensagens da thread.
-    while unsafe { PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) } != 0 {
-        match msg.message {
-            WM_QUIT => p.rodando = false,
-            WM_KEYDOWN | WM_SYSKEYDOWN => input_tecla_evento(&mut p.input, tecla_de_wparam(msg.wParam), true),
-            WM_KEYUP | WM_SYSKEYUP => input_tecla_evento(&mut p.input, tecla_de_wparam(msg.wParam), false),
-            WM_MOUSEMOVE => input_mouse_mover(&mut p.input, lparam_x(msg.lParam), lparam_y(msg.lParam)),
-            WM_LBUTTONDOWN => input_mouse_evento(&mut p.input, MOUSE_ESQUERDO, true),
-            WM_LBUTTONUP => input_mouse_evento(&mut p.input, MOUSE_ESQUERDO, false),
-            WM_RBUTTONDOWN => input_mouse_evento(&mut p.input, MOUSE_DIREITO, true),
-            WM_RBUTTONUP => input_mouse_evento(&mut p.input, MOUSE_DIREITO, false),
-            WM_MBUTTONDOWN => input_mouse_evento(&mut p.input, MOUSE_MEIO, true),
-            WM_MBUTTONUP => input_mouse_evento(&mut p.input, MOUSE_MEIO, false),
-            WM_MOUSEWHEEL => input_roda_evento(&mut p.input, roda_de_wparam(msg.wParam)),
-            _ => {}
-        }
-        // Sem TranslateMessage: o MVP não tem entrada de texto (WM_CHAR).
-        // SAFETY: `msg` veio de PeekMessageW.
-        unsafe { DispatchMessageW(&msg) };
-    }
-
-    // SAFETY: chamada sem ponteiros.
-    let focado = unsafe { GetForegroundWindow() } == p.hwnd;
-    if p.focado && !focado {
-        input_soltar_tudo(&mut p.input);
-    }
-    p.focado = focado;
-
-    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-    // SAFETY: `r` é local e válido.
-    unsafe { GetClientRect(p.hwnd, &mut r) };
-    let largura = u32::try_from(r.right.saturating_sub(r.left)).unwrap_or(0);
-    let altura = u32::try_from(r.bottom.saturating_sub(r.top)).unwrap_or(0);
-    p.redimensionou = largura != p.largura || altura != p.altura;
-    p.largura = largura;
-    p.altura = altura;
-
-    let agora = platform_ticks();
-    p.dt = ticks_para_segundos(agora.saturating_sub(p.frame_inicio), p.ticks_por_segundo) as f32;
-    p.frame_inicio = agora;
-    p.frame_indice = p.frame_indice.wrapping_add(1);
-
-    p.rodando
-}
-
-/// Sem estado: fechar vira WM_QUIT na fila (lido em `platform_poll`), e o menu do Alt/F10
-/// é bloqueado para não pausar o jogo num loop modal.
-unsafe extern "system" fn janela_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+/// Sem estado: fechar vira WM_QUIT na fila (lido em `poll`), e o menu do Alt/F10 é bloqueado
+/// para não pausar o jogo num loop modal.
+unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_CLOSE => {
             // SAFETY: chamada sem ponteiros.
@@ -310,8 +310,8 @@ unsafe extern "system" fn janela_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
 
 // ---------------------------------------------------------------- decodificação
 
-fn tecla_de_wparam(w: WPARAM) -> u8 {
-    (w & 0xFF) as u8
+fn key_from_wparam(w: WPARAM) -> Key {
+    Key((w & 0xFF) as u8)
 }
 
 fn lparam_x(l: LPARAM) -> i32 {
@@ -322,7 +322,7 @@ fn lparam_y(l: LPARAM) -> i32 {
     ((l as usize).wrapping_shr(16) & 0xFFFF) as u16 as i16 as i32
 }
 
-fn roda_de_wparam(w: WPARAM) -> i32 {
+fn wheel_from_wparam(w: WPARAM) -> i32 {
     (w.wrapping_shr(16) & 0xFFFF) as u16 as i16 as i32
 }
 
@@ -331,7 +331,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn coordenadas_negativas_do_mouse() {
+    fn negative_mouse_coordinates() {
         // x = -5, y = 300 (mouse fora da janela à esquerda, com captura)
         let l = ((300usize << 16) | 0xFFFB) as LPARAM;
         assert_eq!(lparam_x(l), -5);
@@ -339,21 +339,21 @@ mod tests {
     }
 
     #[test]
-    fn roda_para_tras_e_negativa() {
+    fn backward_wheel_is_negative() {
         let w = ((-120i16 as u16 as usize) << 16) as WPARAM;
-        assert_eq!(roda_de_wparam(w), -120);
+        assert_eq!(wheel_from_wparam(w), -120);
     }
 
     #[test]
-    fn utf16_termina_em_zero_e_respeita_buffer() {
+    fn utf16_is_null_terminated_and_respects_buffer() {
         let mut buf = [0xFFFFu16; 4];
-        assert_eq!(utf16_em("ab", &mut buf), Some(&[0x61, 0x62, 0][..]));
-        assert_eq!(utf16_em("abcd", &mut buf), None); // falta espaço para o 0
+        assert_eq!(utf16_into("ab", &mut buf), Some(&[0x61, 0x62, 0][..]));
+        assert_eq!(utf16_into("abcd", &mut buf), None); // falta espaço para o 0
     }
 
     #[test]
-    fn ticks_sem_frequencia_nao_divide_por_zero() {
-        assert_eq!(ticks_para_segundos(100, 0), 0.0);
-        assert_eq!(ticks_para_segundos(500, 1000), 0.5);
+    fn zero_frequency_does_not_divide_by_zero() {
+        assert_eq!(ticks_to_seconds(100, 0), 0.0);
+        assert_eq!(ticks_to_seconds(500, 1000), 0.5);
     }
 }

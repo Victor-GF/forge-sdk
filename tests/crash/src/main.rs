@@ -1,0 +1,84 @@
+//! Provoca um crash do tipo pedido e deixa o forja_diag gravar o relatório.
+//!
+//! crash_tests <mode> <dir>
+//!
+//! Modos: oom, locked, exhausted, panic, access, stack.
+
+use std::hint::black_box;
+use std::process::ExitCode;
+
+use forja_diag::crash::{self, CrashConfig};
+use forja_diag::log;
+use forja_mem::global::{self, GLOBAL_CAPACITY, GlobalAllocator};
+use forja_mem::region::{MemoryRegion, ThreadMemoryDesc};
+
+#[global_allocator]
+static ALLOCATOR: GlobalAllocator = GlobalAllocator;
+
+fn main() -> ExitCode {
+    // Argumentos lidos antes de travar o alocador (a std aloca para eles).
+    let mut args = std::env::args();
+    let _ = args.next();
+    let mode = args.next().unwrap_or_default();
+    let dir: &'static str = args.next().unwrap_or_else(|| String::from("crash")).leak();
+
+    crash::install(CrashConfig { app: "crash_tests", version: env!("CARGO_PKG_VERSION"), dir });
+    let Some(mut region) = MemoryRegion::reserve(1024 * 1024) else {
+        log::error(format_args!("sem memória"));
+        return ExitCode::from(2);
+    };
+    let desc = ThreadMemoryDesc { persistent: 4096, level: 4096, frame: 4096 };
+    let Some(memory) = region.thread_memory(&desc) else {
+        log::error(format_args!("memória da thread não coube"));
+        return ExitCode::from(2);
+    };
+    log::info(format_args!("crash_tests: modo '{mode}'"));
+    crash::set_frame(42);
+
+    if mode == "exhausted" {
+        // Antes de travar: pede mais que o buffer do alocador global.
+        let v: Vec<u8> = Vec::with_capacity(black_box(GLOBAL_CAPACITY.saturating_mul(2)));
+        black_box(&v);
+    }
+
+    global::lock();
+
+    match mode.as_str() {
+        "oom" => {
+            // 3800 de 4096 passa de 90% (aviso no log); os próximos 1000 não cabem.
+            let _ = memory.frame.alloc_slice(3800, 0u8);
+            let Some(_) = memory.frame.alloc_slice(1000, 0u8) else {
+                memory.frame.oom_fatal()
+            };
+        }
+        "locked" => {
+            black_box(Vec::<u8>::with_capacity(black_box(100)));
+        }
+        "panic" => trigger_panic(black_box(7)),
+        "access" => {
+            // SAFETY: não é seguro: é o crash que queremos testar.
+            unsafe { black_box(core::ptr::null_mut::<u32>()).write_volatile(1) };
+        }
+        "stack" => {
+            black_box(recurse(0));
+        }
+        _ => {
+            log::error(format_args!("modo desconhecido: '{mode}'"));
+            return ExitCode::from(2);
+        }
+    }
+    log::error(format_args!("modo '{mode}' não crashou"));
+    ExitCode::from(3)
+}
+
+#[allow(clippy::panic)]
+fn trigger_panic(i: usize) {
+    panic!("teste de panic: índice {i}");
+}
+
+#[allow(unconditional_recursion)]
+fn recurse(n: u64) -> u64 {
+    let frame = black_box([n as u8; 4096]);
+    let r = recurse(black_box(n.wrapping_add(1)));
+    r.wrapping_add(u64::from(frame.first().copied().unwrap_or(0)))
+}

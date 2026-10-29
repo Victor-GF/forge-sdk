@@ -6,8 +6,8 @@ members = [
     "engine/forja_mem",
     "engine/forja_platform",
     "engine/forja_inspect",
-    "jogos/corrida",
-    "testes/crash",
+    "games/racing",
+    "tests/crash",
 ]
 
 [workspace.package]

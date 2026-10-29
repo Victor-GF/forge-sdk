@@ -1,4 +1,6 @@
-//! Tipos matemáticos simples: structs `repr(C)` + funções livres.
+//! Tipos matemáticos simples: structs `repr(C)` com métodos próprios (sem traits de operador).
+//!
+//! Os nomes evitam `add`/`sub`/`mul` para não parecerem implementações das traits de operador.
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -15,14 +17,10 @@ pub struct Vec3 {
     pub z: f32,
 }
 
-pub const VEC3_ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
-pub const VEC3_X: Vec3 = Vec3 { x: 1.0, y: 0.0, z: 0.0 };
-pub const VEC3_Y: Vec3 = Vec3 { x: 0.0, y: 1.0, z: 0.0 };
-pub const VEC3_Z: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 1.0 };
+// ---------------------------------------------------------------- escalares
 
-// ---------------------------------------------------------------- f32
-
-pub fn f32_clamp(v: f32, min: f32, max: f32) -> f32 {
+/// Limita `v` a `[min, max]`. Diferente de `f32::clamp`, não entra em pânico se `min > max`.
+pub fn clamp(v: f32, min: f32, max: f32) -> f32 {
     if v < min {
         min
     } else if v > max {
@@ -32,76 +30,91 @@ pub fn f32_clamp(v: f32, min: f32, max: f32) -> f32 {
     }
 }
 
-pub fn f32_lerp(a: f32, b: f32, t: f32) -> f32 {
+pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
 // ---------------------------------------------------------------- Vec2
 
-pub fn vec2_add(a: Vec2, b: Vec2) -> Vec2 {
-    Vec2 { x: a.x + b.x, y: a.y + b.y }
-}
+impl Vec2 {
+    pub const ZERO: Vec2 = Vec2 { x: 0.0, y: 0.0 };
 
-pub fn vec2_sub(a: Vec2, b: Vec2) -> Vec2 {
-    Vec2 { x: a.x - b.x, y: a.y - b.y }
-}
+    pub const fn new(x: f32, y: f32) -> Vec2 {
+        Vec2 { x, y }
+    }
 
-pub fn vec2_scale(a: Vec2, s: f32) -> Vec2 {
-    Vec2 { x: a.x * s, y: a.y * s }
-}
+    pub fn plus(self, b: Vec2) -> Vec2 {
+        Vec2 { x: self.x + b.x, y: self.y + b.y }
+    }
 
-pub fn vec2_dot(a: Vec2, b: Vec2) -> f32 {
-    a.x * b.x + a.y * b.y
-}
+    pub fn minus(self, b: Vec2) -> Vec2 {
+        Vec2 { x: self.x - b.x, y: self.y - b.y }
+    }
 
-pub fn vec2_length(a: Vec2) -> f32 {
-    vec2_dot(a, a).sqrt()
+    pub fn scaled(self, s: f32) -> Vec2 {
+        Vec2 { x: self.x * s, y: self.y * s }
+    }
+
+    pub fn dot(self, b: Vec2) -> f32 {
+        self.x * b.x + self.y * b.y
+    }
+
+    pub fn length(self) -> f32 {
+        self.dot(self).sqrt()
+    }
 }
 
 // ---------------------------------------------------------------- Vec3
 
-pub fn vec3_add(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }
-}
+impl Vec3 {
+    pub const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
+    pub const X: Vec3 = Vec3 { x: 1.0, y: 0.0, z: 0.0 };
+    pub const Y: Vec3 = Vec3 { x: 0.0, y: 1.0, z: 0.0 };
+    pub const Z: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 1.0 };
 
-pub fn vec3_sub(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3 { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }
-}
-
-pub fn vec3_scale(a: Vec3, s: f32) -> Vec3 {
-    Vec3 { x: a.x * s, y: a.y * s, z: a.z * s }
-}
-
-pub fn vec3_dot(a: Vec3, b: Vec3) -> f32 {
-    a.x * b.x + a.y * b.y + a.z * b.z
-}
-
-pub fn vec3_cross(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3 {
-        x: a.y * b.z - a.z * b.y,
-        y: a.z * b.x - a.x * b.z,
-        z: a.x * b.y - a.y * b.x,
+    pub const fn new(x: f32, y: f32, z: f32) -> Vec3 {
+        Vec3 { x, y, z }
     }
-}
 
-pub fn vec3_length(a: Vec3) -> f32 {
-    vec3_dot(a, a).sqrt()
-}
-
-/// Vetor de comprimento 1. Comprimento zero (ou quase) devolve `VEC3_ZERO`.
-pub fn vec3_normalize(a: Vec3) -> Vec3 {
-    let len = vec3_length(a);
-    if len <= 1.0e-8 {
-        return VEC3_ZERO;
+    pub fn plus(self, b: Vec3) -> Vec3 {
+        Vec3 { x: self.x + b.x, y: self.y + b.y, z: self.z + b.z }
     }
-    vec3_scale(a, 1.0 / len)
-}
 
-pub fn vec3_lerp(a: Vec3, b: Vec3, t: f32) -> Vec3 {
-    Vec3 {
-        x: f32_lerp(a.x, b.x, t),
-        y: f32_lerp(a.y, b.y, t),
-        z: f32_lerp(a.z, b.z, t),
+    pub fn minus(self, b: Vec3) -> Vec3 {
+        Vec3 { x: self.x - b.x, y: self.y - b.y, z: self.z - b.z }
+    }
+
+    pub fn scaled(self, s: f32) -> Vec3 {
+        Vec3 { x: self.x * s, y: self.y * s, z: self.z * s }
+    }
+
+    pub fn dot(self, b: Vec3) -> f32 {
+        self.x * b.x + self.y * b.y + self.z * b.z
+    }
+
+    pub fn cross(self, b: Vec3) -> Vec3 {
+        Vec3 {
+            x: self.y * b.z - self.z * b.y,
+            y: self.z * b.x - self.x * b.z,
+            z: self.x * b.y - self.y * b.x,
+        }
+    }
+
+    pub fn length(self) -> f32 {
+        self.dot(self).sqrt()
+    }
+
+    /// Vetor de comprimento 1. Comprimento zero (ou quase) devolve `Vec3::ZERO`.
+    pub fn normalized(self) -> Vec3 {
+        let len = self.length();
+        if len <= 1.0e-8 {
+            return Vec3::ZERO;
+        }
+        self.scaled(1.0 / len)
+    }
+
+    pub fn lerp(self, b: Vec3, t: f32) -> Vec3 {
+        Vec3 { x: lerp(self.x, b.x, t), y: lerp(self.y, b.y, t), z: lerp(self.z, b.z, t) }
     }
 }
 
@@ -110,23 +123,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cross_segue_mao_direita() {
-        assert_eq!(vec3_cross(VEC3_X, VEC3_Y), VEC3_Z);
-        assert_eq!(vec3_cross(VEC3_Y, VEC3_Z), VEC3_X);
+    fn cross_is_right_handed() {
+        assert_eq!(Vec3::X.cross(Vec3::Y), Vec3::Z);
+        assert_eq!(Vec3::Y.cross(Vec3::Z), Vec3::X);
     }
 
     #[test]
-    fn normalize_de_zero_nao_gera_nan() {
-        assert_eq!(vec3_normalize(VEC3_ZERO), VEC3_ZERO);
-        let n = vec3_normalize(Vec3 { x: 3.0, y: 0.0, z: 4.0 });
-        assert!((vec3_length(n) - 1.0).abs() < 1.0e-6);
+    fn normalizing_zero_does_not_produce_nan() {
+        assert_eq!(Vec3::ZERO.normalized(), Vec3::ZERO);
+        let n = Vec3::new(3.0, 0.0, 4.0).normalized();
+        assert!((n.length() - 1.0).abs() < 1.0e-6);
     }
 
     #[test]
-    fn clamp_e_lerp() {
-        assert_eq!(f32_clamp(5.0, 0.0, 1.0), 1.0);
-        assert_eq!(f32_clamp(-5.0, 0.0, 1.0), 0.0);
-        assert_eq!(f32_lerp(2.0, 4.0, 0.5), 3.0);
-        assert_eq!(vec2_length(Vec2 { x: 3.0, y: 4.0 }), 5.0);
+    fn clamp_and_lerp() {
+        assert_eq!(clamp(5.0, 0.0, 1.0), 1.0);
+        assert_eq!(clamp(-5.0, 0.0, 1.0), 0.0);
+        assert_eq!(lerp(2.0, 4.0, 0.5), 3.0);
+        assert_eq!(Vec2::new(3.0, 4.0).length(), 5.0);
+        assert_eq!(Vec3::new(1.0, 2.0, 3.0).plus(Vec3::X).minus(Vec3::Y), Vec3::new(2.0, 1.0, 3.0));
     }
 }

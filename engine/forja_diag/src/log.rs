@@ -1,135 +1,133 @@
 //! Log em stderr, sem alocar: recebe `format_args!(...)`.
 //!
-//! `log_info(format_args!("{n} eventos"))`
+//! `log::info(format_args!("{n} eventos"))`
 //!
-//! Cada linha também vai para o rastro: um ring buffer fixo com as últimas linhas, que o
-//! crash report inclui (como o log de crash da Unreal). Linhas maiores que `LINHA_MAX` são
+//! Cada linha também vai para os breadcrumbs: um ring buffer fixo com as últimas linhas, que
+//! o crash report inclui (como o log de crash da Unreal). Linhas maiores que `LINE_MAX` são
 //! cortadas.
 
 use core::cell::UnsafeCell;
 use core::fmt::{self, Write};
 
-use forja_core::texto::{Texto, texto_bytes, texto_novo};
+use forja_core::text::TextBuf;
 
-use crate::trava::{Trava, trava_nova, trava_soltar, trava_tentar};
+use crate::spin_lock::SpinLock;
 
-pub const LINHA_MAX: usize = 1024;
-pub const RASTRO_CAPACIDADE: usize = 16 * 1024;
+pub const LINE_MAX: usize = 1024;
+pub const BREADCRUMB_CAPACITY: usize = 16 * 1024;
 
-struct RastroDados {
-    buf: [u8; RASTRO_CAPACIDADE],
+struct RingData {
+    buf: [u8; BREADCRUMB_CAPACITY],
     pos: usize,
-    cheio: bool,
+    wrapped: bool,
 }
 
-struct Rastro {
-    trava: Trava,
-    dados: UnsafeCell<RastroDados>,
+struct Breadcrumbs {
+    lock: SpinLock,
+    data: UnsafeCell<RingData>,
 }
 
-// SAFETY: `dados` só é acessado com `trava` pega (ou, no crash, por uma única thread que
+// SAFETY: `data` só é acessado com `lock` pego (ou, no crash, por uma única thread que
 // aceita ler um estado parcial).
-unsafe impl Sync for Rastro {}
+unsafe impl Sync for Breadcrumbs {}
 
-static RASTRO: Rastro = Rastro {
-    trava: trava_nova(),
-    dados: UnsafeCell::new(RastroDados { buf: [0; RASTRO_CAPACIDADE], pos: 0, cheio: false }),
+static BREADCRUMBS: Breadcrumbs = Breadcrumbs {
+    lock: SpinLock::new(),
+    data: UnsafeCell::new(RingData { buf: [0; BREADCRUMB_CAPACITY], pos: 0, wrapped: false }),
 };
 
-pub fn log_info(args: fmt::Arguments) {
-    log_linha("info", args);
+pub fn info(args: fmt::Arguments) {
+    write_line("info", args);
 }
 
-pub fn log_aviso(args: fmt::Arguments) {
-    log_linha("aviso", args);
+pub fn warn(args: fmt::Arguments) {
+    write_line("aviso", args);
 }
 
-pub fn log_erro(args: fmt::Arguments) {
-    log_linha("erro", args);
+pub fn error(args: fmt::Arguments) {
+    write_line("erro", args);
 }
 
-fn log_linha(nivel: &str, args: fmt::Arguments) {
-    let mut buf = [0u8; LINHA_MAX];
-    let mut t = texto_novo(&mut buf);
-    let _ = write!(t, "[{nivel}] {args}");
-    if t.truncou {
+fn write_line(level: &str, args: fmt::Arguments) {
+    let mut buf = [0u8; LINE_MAX];
+    let mut t = TextBuf::new(&mut buf);
+    let _ = write!(t, "[{level}] {args}");
+    if t.truncated() {
         let _ = t.write_str(" [...]");
     }
     let _ = t.write_char('\n');
-    let bytes = texto_bytes(&t);
-    let _ = std::io::Write::write_all(&mut std::io::stderr(), bytes);
-    rastro_anexar(bytes);
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), t.as_bytes());
+    breadcrumbs_append(t.as_bytes());
 }
 
-fn rastro_anexar(bytes: &[u8]) {
-    if !trava_tentar(&RASTRO.trava, 100_000) {
+fn breadcrumbs_append(bytes: &[u8]) {
+    if !BREADCRUMBS.lock.try_lock(100_000) {
         return;
     }
-    // SAFETY: trava pega.
-    let d = unsafe { &mut *RASTRO.dados.get() };
+    // SAFETY: lock pego.
+    let d = unsafe { &mut *BREADCRUMBS.data.get() };
     for &b in bytes {
         if let Some(x) = d.buf.get_mut(d.pos) {
             *x = b;
         }
         d.pos = d.pos.saturating_add(1);
-        if d.pos >= RASTRO_CAPACIDADE {
+        if d.pos >= BREADCRUMB_CAPACITY {
             d.pos = 0;
-            d.cheio = true;
+            d.wrapped = true;
         }
     }
-    trava_soltar(&RASTRO.trava);
+    BREADCRUMBS.lock.unlock();
 }
 
-/// Escreve o rastro em ordem (mais antiga primeiro). Usado pelo crash report: se a trava
-/// estiver presa (a thread morreu no meio de um log), lê assim mesmo.
-pub(crate) fn rastro_escrever(t: &mut Texto) {
-    let pegou = trava_tentar(&RASTRO.trava, 1000);
-    // SAFETY: com a trava, ou no crash (uma thread só escreve o relatório); pior caso,
+/// Escreve os breadcrumbs em ordem (mais antigo primeiro). Usado pelo crash report: se o lock
+/// estiver preso (a thread morreu no meio de um log), lê assim mesmo.
+pub(crate) fn write_breadcrumbs(t: &mut TextBuf) {
+    let locked = BREADCRUMBS.lock.try_lock(1000);
+    // SAFETY: com o lock, ou no crash (uma thread só escreve o relatório); pior caso,
     // uma linha sai embaralhada.
-    let d = unsafe { &*RASTRO.dados.get() };
-    let (antigo, novo) = if d.cheio {
+    let d = unsafe { &*BREADCRUMBS.data.get() };
+    let (older, newer) = if d.wrapped {
         (d.buf.get(d.pos..).unwrap_or(&[]), d.buf.get(..d.pos).unwrap_or(&[]))
     } else {
         (d.buf.get(..d.pos).unwrap_or(&[]), &[][..])
     };
     // Quando o anel deu a volta, a primeira linha está cortada: pula até o primeiro '\n'.
-    let antigo = if d.cheio {
-        match antigo.iter().position(|&b| b == b'\n') {
-            Some(i) => antigo.get(i.saturating_add(1)..).unwrap_or(&[]),
+    let older = if d.wrapped {
+        match older.iter().position(|&b| b == b'\n') {
+            Some(i) => older.get(i.saturating_add(1)..).unwrap_or(&[]),
             None => &[][..],
         }
     } else {
-        antigo
+        older
     };
-    for parte in [antigo, novo] {
-        for pedaco in parte.utf8_chunks() {
-            let _ = t.write_str(pedaco.valid());
+    for part in [older, newer] {
+        for chunk in part.utf8_chunks() {
+            let _ = t.write_str(chunk.valid());
         }
     }
-    if pegou {
-        trava_soltar(&RASTRO.trava);
+    if locked {
+        BREADCRUMBS.lock.unlock();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forja_core::texto::texto_str;
 
     #[test]
-    fn rastro_guarda_as_linhas_mais_recentes() {
-        // Único teste que mexe no rastro global. Chama `rastro_anexar` direto para não
-        // encher o stderr dos testes.
+    fn breadcrumbs_keep_the_latest_lines() {
+        // Único teste que mexe nos breadcrumbs globais. Chama `breadcrumbs_append` direto
+        // para não encher o stderr dos testes.
         for i in 0..2000u32 {
             let mut b = [0u8; 64];
-            let mut l = texto_novo(&mut b);
+            let mut l = TextBuf::new(&mut b);
             let _ = writeln!(l, "[info] linha {i}");
-            rastro_anexar(texto_bytes(&l));
+            breadcrumbs_append(l.as_bytes());
         }
-        let mut buf = vec![0u8; RASTRO_CAPACIDADE + 64];
-        let mut t = texto_novo(&mut buf);
-        rastro_escrever(&mut t);
-        let s = texto_str(&t);
+        let mut buf = vec![0u8; BREADCRUMB_CAPACITY + 64];
+        let mut t = TextBuf::new(&mut buf);
+        write_breadcrumbs(&mut t);
+        let s = t.as_str();
         assert!(s.ends_with("[info] linha 1999\n"));
         assert!(s.starts_with("[info] linha "));
         assert!(!s.contains("linha 0\n"));

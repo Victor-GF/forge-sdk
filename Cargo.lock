@@ -3,18 +3,7 @@
 version = 4
 
 [[package]]
-name = "corrida"
-version = "0.1.0"
-dependencies = [
- "forja_core",
- "forja_diag",
- "forja_inspect",
- "forja_mem",
- "forja_platform",
-]
-
-[[package]]
-name = "crash_testes"
+name = "crash_tests"
 version = "0.1.0"
 dependencies = [
  "forja_diag",
@@ -54,6 +43,17 @@ name = "forja_platform"
 version = "0.1.0"
 dependencies = [
  "windows-sys",
+]
+
+[[package]]
+name = "racing"
+version = "0.1.0"
+dependencies = [
+ "forja_core",
+ "forja_diag",
+ "forja_inspect",
+ "forja_mem",
+ "forja_platform",
 ]
 
 [[package]]

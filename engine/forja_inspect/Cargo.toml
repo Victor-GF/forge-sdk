@@ -6,10 +6,10 @@ edition.workspace = true
 [dependencies]
 forja_core.workspace = true
 
-# Sem a feature "ativo", todas as funções de registro viram no-op eliminado pelo compilador.
-# O jogo liga com `forja_inspect/ativo` (ver jogos/corrida/Cargo.toml).
+# Sem a feature "enabled", todas as funções de registro viram no-op eliminado pelo compilador.
+# O jogo liga com `forja_inspect/enabled` (ver games/racing/Cargo.toml).
 [features]
-ativo = []
+enabled = []
 
 [lints]
 workspace = true
