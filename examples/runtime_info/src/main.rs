@@ -260,11 +260,14 @@ fn main() -> ExitCode {
 
 /// `--headless N` (N opcional). Lido na inicialização: a std aloca para os argumentos, o que é
 /// permitido antes de `global::end_startup()`.
+///
+/// `args_os` em vez de `args`: `args` entra em pânico se algum argumento não for UTF-8 válido.
+/// Aqui um argumento assim é só ignorado (e um N inválido vira o padrão).
 fn headless_frames_from_args() -> Option<u64> {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--headless" {
-            let frames = args.next().and_then(|n| n.parse::<u64>().ok());
+            let frames = args.next().and_then(|n| n.to_str().and_then(|s| s.parse::<u64>().ok()));
             return Some(frames.unwrap_or(HEADLESS_DEFAULT_FRAMES));
         }
     }

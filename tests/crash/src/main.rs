@@ -18,10 +18,25 @@ static ALLOCATOR: GlobalAllocator = GlobalAllocator;
 
 fn main() -> ExitCode {
     // Inicialização: a std aloca para os argumentos (política Startup, sem relatório).
-    let mut args = std::env::args();
-    let _ = args.next();
-    let mode = args.next().unwrap_or_default();
-    let dir: &'static str = args.next().unwrap_or_else(|| String::from("crash")).leak();
+    // `args_os` em vez de `args` (que entra em pânico com argumento que não é UTF-8): modo e
+    // pasta precisam ser texto, então argumento inválido sai com erro, como modo desconhecido.
+    let mut args = std::env::args_os().skip(1);
+    let mode = match args.next().map(|m| m.into_string()) {
+        None => String::new(),
+        Some(Ok(m)) => m,
+        Some(Err(m)) => {
+            log::error(format_args!("modo não é UTF-8 válido: {m:?}"));
+            return ExitCode::from(2);
+        }
+    };
+    let dir: &'static str = match args.next().map(|d| d.into_string()) {
+        None => "crash",
+        Some(Ok(d)) => d.leak(),
+        Some(Err(d)) => {
+            log::error(format_args!("pasta não é UTF-8 válido: {d:?}"));
+            return ExitCode::from(2);
+        }
+    };
 
     crash::install(CrashConfig { app: "crash_tests", version: env!("CARGO_PKG_VERSION"), dir });
     let Some(mut region) = MemoryRegion::reserve(1024 * 1024) else {

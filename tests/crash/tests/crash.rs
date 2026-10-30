@@ -112,3 +112,30 @@ fn stack_overflow() {
     let o = run("stack");
     check_common(&o, "stack overflow");
 }
+
+/// Argumento que não é UTF-8 válido (`std::env::args` entraria em pânico com ele).
+fn invalid_utf8_arg() -> std::ffi::OsString {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        // "a" + surrogate UTF-16 solto: válido no Windows, impossível em UTF-8.
+        std::ffi::OsString::from_wide(&[0x61, 0xD800])
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        // "a" + byte 0xFF: válido no Linux, impossível em UTF-8.
+        std::ffi::OsString::from_vec(vec![0x61, 0xFF])
+    }
+}
+
+#[test]
+fn invalid_utf8_argument_is_an_error_not_a_crash() {
+    for args in [vec![invalid_utf8_arg()], vec!["report".into(), invalid_utf8_arg()]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_crash_tests")).args(&args).output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{stderr}");
+        assert!(stderr.contains("não é UTF-8 válido"), "{stderr}");
+        assert!(!stderr.contains("[crash]"), "não deveria haver crash: {stderr}");
+    }
+}
