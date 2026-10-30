@@ -74,6 +74,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime_info"
+version = "0.1.0"
+dependencies = [
+ "forja_core",
+ "forja_diag",
+ "forja_mem",
+ "forja_os",
+ "forja_platform",
+]
+
+[[package]]
 name = "windows-sys"
 version = "0.59.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -21,9 +21,9 @@ ele faz deve estar à vista.
   frame, breadcrumbs, crash report). Nada de apelidos locais.
 - **Comentários, docs e mensagens de log em português.**
 - Tipos em `PascalCase`, funções e métodos em `snake_case`, constantes em `UPPER_CASE`.
-- Pastas: `engine/`, `games/`, `tests/`, `tools/`, `docs/`. Dentro de `engine/`, pastas com
-  nome curto (`engine/mem`) e crates com prefixo (`forja_mem`): o prefixo evita colisão com o
-  `core` do Rust e com crates externos.
+- Pastas: `engine/`, `games/`, `examples/`, `tests/`, `tools/`, `docs/`. Dentro de `engine/`,
+  pastas com nome curto (`engine/mem`) e crates com prefixo (`forja_mem`): o prefixo evita
+  colisão com o `core` do Rust e com crates externos.
 
 ## Plataformas suportadas
 

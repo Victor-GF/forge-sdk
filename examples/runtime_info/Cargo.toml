@@ -1,0 +1,16 @@
+[package]
+name = "runtime_info"
+version.workspace = true
+edition.workspace = true
+
+# Exemplo: abre uma janela e mostra o estado do runtime (SO, memória, heap geral, plataforma
+# e input). Sem profiler e sem render.
+[dependencies]
+forja_core.workspace = true
+forja_diag.workspace = true
+forja_mem.workspace = true
+forja_os.workspace = true
+forja_platform.workspace = true
+
+[lints]
+workspace = true
