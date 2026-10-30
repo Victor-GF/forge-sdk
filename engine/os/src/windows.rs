@@ -19,7 +19,7 @@ use windows_sys::Win32::System::Diagnostics::Debug::{
 };
 use windows_sys::Win32::System::LibraryLoader::{
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-    GetModuleFileNameW, GetModuleHandleExW, GetProcAddress, LoadLibraryW,
+    GetModuleFileNameW, GetModuleHandleExW, GetModuleHandleW, GetProcAddress, LoadLibraryW,
 };
 use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc};
 use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
@@ -36,7 +36,7 @@ use crate::file::PATH_MAX;
 use crate::library::NAME_MAX;
 use crate::memory::PageInfo;
 use crate::process::{ProcessMemory, SystemMemory};
-use crate::stack::FRAMES_MAX;
+use crate::stack::{BuildId, FRAMES_MAX};
 use crate::time::UtcTime;
 
 /// Converte `s` para UTF-16 terminado em 0 dentro de `buf`. `None` se não couber.
@@ -213,6 +213,87 @@ pub(crate) fn write_module_offset(t: &mut TextBuf, address: usize) -> bool {
     }
     let _ = write!(t, "+0x{:x}", address.wrapping_sub(module as usize));
     true
+}
+
+// Deslocamentos nos cabeçalhos PE32+ (winnt.h). Lidos byte a byte: sem depender de alinhamento.
+const DOS_E_LFANEW: usize = 0x3C;
+const PE_SIGNATURE: u32 = 0x0000_4550; // "PE\0\0"
+/// Assinatura (4) + IMAGE_FILE_HEADER (20).
+const OPTIONAL_HEADER_OFFSET: usize = 24;
+const PE32_PLUS_MAGIC: u16 = 0x20B;
+/// `DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG]` no IMAGE_OPTIONAL_HEADER64: 112 + 6 * 8.
+const DEBUG_DIRECTORY_OFFSET: usize = 160;
+const DEBUG_ENTRY_SIZE: usize = 28;
+const DEBUG_TYPE_CODEVIEW: u32 = 2;
+const CODEVIEW_RSDS: u32 = 0x5344_5352; // "RSDS"
+
+fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    let b = bytes.get(offset..offset.checked_add(2)?)?;
+    Some(u16::from_le_bytes(b.try_into().ok()?))
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let b = bytes.get(offset..offset.checked_add(4)?)?;
+    Some(u32::from_le_bytes(b.try_into().ok()?))
+}
+
+/// `len` bytes da imagem do módulo a partir de `rva`.
+///
+/// # Safety
+/// `[base + rva, base + rva + len)` precisa estar dentro de uma parte mapeada e legível da imagem.
+unsafe fn image_bytes<'a>(base: usize, rva: usize, len: usize) -> &'a [u8] {
+    // SAFETY: garantido por quem chama.
+    unsafe { core::slice::from_raw_parts(base.wrapping_add(rva) as *const u8, len) }
+}
+
+/// GUID + age (20 bytes) da entrada CodeView `RSDS` do diretório de debug do PE: o mesmo par
+/// que casa um executável MSVC com o PDB. O `ld` do MinGW grava com `--build-id`.
+///
+/// Escrito sem rodar (desenvolvimento no Linux, ver "Plataformas suportadas" em
+/// `docs/style.md`): só verificado pelo clippy. O teste de contrato `build_id_is_present_and_stable`
+/// e o crash test conferem quando o Windows voltar a executar.
+pub(crate) fn build_id() -> Option<BuildId> {
+    // SAFETY: nome nulo devolve o módulo do executável, sem mexer na contagem de referências.
+    let base = unsafe { GetModuleHandleW(null()) } as usize;
+    if base == 0 {
+        return None;
+    }
+    // SAFETY: o cabeçalho DOS (64 bytes) está no início da imagem carregada.
+    let dos = unsafe { image_bytes(base, 0, 64) };
+    let nt_offset = usize::try_from(read_u32(dos, DOS_E_LFANEW)?).ok()?;
+    let nt_len = DEBUG_DIRECTORY_OFFSET.checked_add(OPTIONAL_HEADER_OFFSET)?.checked_add(8)?;
+    // SAFETY: `e_lfanew` aponta para os cabeçalhos NT, mapeados junto com o DOS; confere a
+    // assinatura antes de ler o resto.
+    let nt = unsafe { image_bytes(base, nt_offset, nt_len) };
+    if read_u32(nt, 0)? != PE_SIGNATURE || read_u16(nt, OPTIONAL_HEADER_OFFSET)? != PE32_PLUS_MAGIC {
+        return None;
+    }
+    let directory = OPTIONAL_HEADER_OFFSET.checked_add(DEBUG_DIRECTORY_OFFSET)?;
+    let debug_rva = usize::try_from(read_u32(nt, directory)?).ok()?;
+    let debug_size = usize::try_from(read_u32(nt, directory.checked_add(4)?)?).ok()?;
+    if debug_rva == 0 || debug_size == 0 {
+        return None;
+    }
+    // SAFETY: o diretório de debug fica numa seção carregada (o tamanho vem do cabeçalho).
+    let entries = unsafe { image_bytes(base, debug_rva, debug_size) };
+    for entry in entries.as_chunks::<DEBUG_ENTRY_SIZE>().0 {
+        let entry = entry.as_slice();
+        if read_u32(entry, 12)? != DEBUG_TYPE_CODEVIEW {
+            continue;
+        }
+        let data_rva = usize::try_from(read_u32(entry, 20)?).ok()?;
+        let data_size = usize::try_from(read_u32(entry, 16)?).ok()?;
+        if data_rva == 0 || data_size < 24 {
+            continue;
+        }
+        // SAFETY: `AddressOfRawData` aponta para os dados CodeView carregados; lê só os 24 bytes
+        // fixos (assinatura, GUID, age), menos que `SizeOfData`.
+        let data = unsafe { image_bytes(base, data_rva, 24) };
+        if read_u32(data, 0)? == CODEVIEW_RSDS {
+            return BuildId::from_bytes(data.get(4..24)?);
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------- erro fatal

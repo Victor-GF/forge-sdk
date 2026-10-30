@@ -10,6 +10,23 @@ use std::process::Command;
 /// Como o módulo aparece na pilha (`forja_os::stack::write_module_offset`).
 const MODULE: &str = if cfg!(windows) { "crash_tests.exe+0x" } else { "crash_tests+0x" };
 
+/// Linux: o build id do relatório é o do binário em disco, lido por uma ferramenta independente
+/// (`readelf`, binutils): confere o leitor do `forja_os` contra o que o linker gravou.
+#[cfg(target_os = "linux")]
+fn build_id_matches(build: &str) -> bool {
+    let out = Command::new("readelf").arg("-n").arg(env!("CARGO_BIN_EXE_crash_tests")).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let id = text.lines().find_map(|l| l.trim().strip_prefix("Build ID: ")).unwrap_or_default();
+    assert!(!id.is_empty(), "readelf não achou build id:\n{text}");
+    build == id
+}
+
+/// Windows: GUID + age da entrada CodeView (20 bytes).
+#[cfg(windows)]
+fn build_id_matches(build: &str) -> bool {
+    build.len() == 40 && build.bytes().all(|c| c.is_ascii_hexdigit())
+}
+
 struct Outcome {
     code: Option<i32>,
     stderr: String,
@@ -38,6 +55,8 @@ fn check_common(o: &Outcome, reason: &str) {
     assert!(o.report.contains("jogo:    crash_tests"), "{}", o.report);
     assert!(o.report.contains("frame:   42"), "{}", o.report);
     assert!(o.report.contains(&format!("sistema: {}\n", std::env::consts::OS)), "{}", o.report);
+    let build = o.report.lines().find_map(|l| l.strip_prefix("build:   ")).unwrap_or("");
+    assert!(build_id_matches(build), "build id errado:\n{}", o.report);
     assert!(o.report.contains(MODULE), "pilha sem o módulo:\n{}", o.report);
     assert!(o.report.contains("--- memória do sistema ---"), "{}", o.report);
     for forbidden in ["detalhe", "crash_tests: modo", ".rs:"] {

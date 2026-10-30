@@ -106,6 +106,19 @@ fn stack_capture_resolves_to_this_test_binary() {
 }
 
 #[test]
+fn build_id_is_present_and_stable() {
+    // O workspace linka com --build-id nos dois sistemas (.cargo/config.toml).
+    let id = stack::build_id().expect("executável sem build id");
+    assert!(!id.as_bytes().is_empty() && id.as_bytes().len() <= stack::BUILD_ID_MAX);
+    assert_eq!(stack::build_id(), Some(id));
+    let mut buf = [0u8; 2 * stack::BUILD_ID_MAX];
+    let mut t = TextBuf::new(&mut buf);
+    id.write_hex(&mut t);
+    assert_eq!(t.as_str().len(), 2 * id.as_bytes().len());
+    assert!(t.as_str().bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+}
+
+#[test]
 fn address_outside_any_module_writes_nothing() {
     let mut buf = [0u8; 256];
     let mut t = TextBuf::new(&mut buf);

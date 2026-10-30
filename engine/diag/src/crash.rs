@@ -16,7 +16,8 @@
 //! Nada de texto montado em tempo de execução (mensagem de panic, detalhes, log) nem endereço
 //! absoluto: o arquivo pode sair da máquina do jogador sem levar dados dele. O texto livre vai
 //! só para o stderr. A pilha é simbolizada fora (`tools/symbolize.sh`), com o binário do mesmo
-//! build guardado por quem publicou (o papel dos PDBs na Unreal).
+//! build guardado por quem publicou (o papel dos PDBs na Unreal); a linha `build:` (build id
+//! do executável) diz qual é. Ver "Release e símbolos" em `docs/style.md`.
 //!
 //! O relatório é montado num buffer estático (`REPORT_CAPACITY`) e gravado pelo `forja_os`:
 //! nada é alocado, então funciona sem memória livre e com o heap geral proibido.
@@ -29,8 +30,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use forja_core::text::TextBuf;
 use forja_os::fatal::{self, FatalEvent, FatalKind, MemoryAccess};
 use forja_os::file::{self, FileWriter};
+use forja_os::stack::BuildId;
 use forja_os::{process, stack, time};
 
+use crate::log;
 use crate::spin_lock::SpinLock;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -50,15 +53,26 @@ const NESTED_CRASH_EXIT_CODE: u32 = 0xDEAD;
 /// (64 KB no Windows e no `vm.mmap_min_addr` padrão do Linux).
 const NULL_PAGE_LIMIT: usize = 64 * 1024;
 
-struct Shared {
-    lock: SpinLock,
-    config: UnsafeCell<CrashConfig>,
+/// O que `install` guarda para o relatório.
+#[derive(Clone, Copy)]
+struct Installed {
+    config: CrashConfig,
+    /// Lido na instalação: no crash só é copiado.
+    build_id: Option<BuildId>,
 }
 
-// SAFETY: `config` só é escrito com `lock` pego; no crash é lido mesmo sem ele (melhor esforço).
+struct Shared {
+    lock: SpinLock,
+    installed: UnsafeCell<Installed>,
+}
+
+// SAFETY: `installed` só é escrito com `lock` pego; no crash é lido mesmo sem ele (melhor esforço).
 unsafe impl Sync for Shared {}
 
-static SHARED: Shared = Shared { lock: SpinLock::new(), config: UnsafeCell::new(DEFAULT_CONFIG) };
+static SHARED: Shared = Shared {
+    lock: SpinLock::new(),
+    installed: UnsafeCell::new(Installed { config: DEFAULT_CONFIG, build_id: None }),
+};
 
 struct ReportBuf(UnsafeCell<[u8; REPORT_CAPACITY]>);
 
@@ -76,11 +90,17 @@ static CRASH_THREAD: AtomicU64 = AtomicU64::new(0);
 /// Instala o hook de panic e o handler de erro fatal do SO. Chame no início do `main`, antes
 /// de `global::end_startup()`.
 pub fn install(config: CrashConfig) {
+    let build_id = stack::build_id();
     if SHARED.lock.try_lock(u32::MAX) {
         // SAFETY: lock pego.
-        unsafe { *SHARED.config.get() = config };
+        unsafe { *SHARED.installed.get() = Installed { config, build_id } };
         SHARED.lock.unlock();
     }
+    // No log também: os avisos com pilha do heap geral são simbolizados por ele.
+    let mut id_buf = [0u8; 2 * stack::BUILD_ID_MAX];
+    let mut id_text = TextBuf::new(&mut id_buf);
+    write_build_id(&mut id_text, build_id);
+    log::info(format_args!("crash report ativo; build: {}", id_text.as_str()));
     START_TICKS.store(time::ticks(), Ordering::Relaxed);
     fatal::install(on_fatal);
     // `panic_hook` é uma função (tamanho zero): o Box não aloca.
@@ -165,10 +185,10 @@ fn enter_crash() -> bool {
     }
 }
 
-fn read_config() -> CrashConfig {
+fn read_installed() -> Installed {
     let locked = SHARED.lock.try_lock(1000);
     // SAFETY: com o lock, ou no crash (melhor esforço).
-    let c = unsafe { *SHARED.config.get() };
+    let c = unsafe { *SHARED.installed.get() };
     if locked {
         SHARED.lock.unlock();
     }
@@ -179,7 +199,7 @@ fn write_report(crash: &Crash) {
     if !enter_crash() {
         return;
     }
-    let config = read_config();
+    let Installed { config, build_id } = read_installed();
     // SAFETY: só esta thread chega aqui (`enter_crash`).
     let buf: &mut [u8] = unsafe { &mut *REPORT.0.get() };
     let mut t = TextBuf::new(buf);
@@ -191,6 +211,9 @@ fn write_report(crash: &Crash) {
     let _ = writeln!(t, "=== Forja: relatório de crash ===");
     let _ = writeln!(t, "jogo:    {} {}", config.app, config.version);
     let _ = writeln!(t, "sistema: {}", forja_os::CURRENT.name());
+    let _ = t.write_str("build:   ");
+    write_build_id(&mut t, build_id);
+    let _ = t.write_char('\n');
     let _ = writeln!(
         t,
         "data:    {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
@@ -260,6 +283,17 @@ fn write_stack(t: &mut TextBuf, instruction_address: Option<usize>) {
     for (i, f) in frames.iter().take(n).enumerate() {
         let _ = write!(t, "#{i:02}     ");
         write_frame(t, *f);
+    }
+}
+
+/// Hex do build id, ou `desconhecido` (sem ele, a pilha só pode ser simbolizada com o binário
+/// certo escolhido à mão).
+fn write_build_id(t: &mut TextBuf, build_id: Option<BuildId>) {
+    match build_id {
+        Some(id) => id.write_hex(t),
+        None => {
+            let _ = t.write_str("desconhecido");
+        }
     }
 }
 

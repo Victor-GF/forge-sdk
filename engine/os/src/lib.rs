@@ -197,6 +197,8 @@ pub mod file {
 // ---------------------------------------------------------------- pilha
 
 pub mod stack {
+    use core::fmt::Write;
+
     use forja_core::text::TextBuf;
 
     use crate::sys;
@@ -217,6 +219,49 @@ pub mod stack {
     /// chama decide se mostra o endereço cru). Não aloca.
     pub fn write_module_offset(out: &mut TextBuf, address: usize) -> bool {
         sys::write_module_offset(out, address)
+    }
+
+    /// Maior build id aceito, em bytes (o `ld` grava 20: SHA-1).
+    pub const BUILD_ID_MAX: usize = 32;
+
+    /// Identificador único do executável, gravado pelo linker (`--build-id`). Casa a pilha de
+    /// um crash report com o binário de símbolos guardado do mesmo build: o deslocamento de
+    /// `write_module_offset` só vale contra aquele binário exato. Sobrevive ao `strip`.
+    /// Sempre tem de 1 a `BUILD_ID_MAX` bytes.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct BuildId {
+        bytes: [u8; BUILD_ID_MAX],
+        len: u8,
+    }
+
+    impl BuildId {
+        /// `None` se `bytes` for vazio ou maior que `BUILD_ID_MAX`.
+        pub(crate) fn from_bytes(bytes: &[u8]) -> Option<BuildId> {
+            let len = u8::try_from(bytes.len()).ok().filter(|&n| n > 0 && usize::from(n) <= BUILD_ID_MAX)?;
+            let mut id = BuildId { bytes: [0; BUILD_ID_MAX], len };
+            id.bytes.get_mut(..bytes.len())?.copy_from_slice(bytes);
+            Some(id)
+        }
+
+        pub fn as_bytes(&self) -> &[u8] {
+            self.bytes.get(..usize::from(self.len)).unwrap_or(&[])
+        }
+
+        /// Escreve em hexadecimal minúsculo, como o `readelf -n` mostra. Não aloca.
+        pub fn write_hex(&self, out: &mut TextBuf) {
+            for b in self.as_bytes() {
+                let _ = write!(out, "{b:02x}");
+            }
+        }
+    }
+
+    /// Build id do executável principal (não das bibliotecas carregadas). Não aloca nem pega
+    /// lock, mas leia uma vez na inicialização e guarde.
+    ///
+    /// Linux: nota `NT_GNU_BUILD_ID` do ELF (20 bytes). Windows: GUID + age da entrada
+    /// CodeView do PE (20 bytes). `None` se o executável foi linkado sem `--build-id`.
+    pub fn build_id() -> Option<BuildId> {
+        sys::build_id()
     }
 }
 

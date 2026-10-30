@@ -21,6 +21,7 @@ use crate::file::PATH_MAX;
 use crate::library::NAME_MAX;
 use crate::memory::PageInfo;
 use crate::process::{ProcessMemory, SystemMemory};
+use crate::stack::BuildId;
 use crate::time::UtcTime;
 
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
@@ -244,6 +245,57 @@ pub(crate) fn write_module_offset(t: &mut TextBuf, address: usize) -> bool {
     let _ = write!(t, "+0x{:x}", address.wrapping_sub(info.dli_fbase as usize));
     true
 }
+
+const NT_GNU_BUILD_ID: u32 = 3;
+
+/// Nota `NT_GNU_BUILD_ID` do executável. Os program headers vêm do vetor auxiliar do kernel
+/// (`AT_PHDR`), sem `dl_iterate_phdr` (que pega o lock do carregador).
+pub(crate) fn build_id() -> Option<BuildId> {
+    // SAFETY: `getauxval` só lê o vetor auxiliar do processo.
+    let (phdr, phnum) = unsafe { (libc::getauxval(libc::AT_PHDR), libc::getauxval(libc::AT_PHNUM)) };
+    if phdr == 0 {
+        return None;
+    }
+    // SAFETY: `AT_PHDR` aponta para os `AT_PHNUM` program headers do executável, já mapeados.
+    let headers =
+        unsafe { core::slice::from_raw_parts(phdr as *const libc::Elf64_Phdr, usize::try_from(phnum).ok()?) };
+    // PIE é carregado com deslocamento: endereço = base + p_vaddr. Sem PT_PHDR (não PIE), base 0.
+    let base = headers
+        .iter()
+        .find(|h| h.p_type == libc::PT_PHDR)
+        .map_or(0, |h| (phdr as usize).wrapping_sub(h.p_vaddr as usize));
+    for h in headers.iter().filter(|h| h.p_type == libc::PT_NOTE) {
+        // SAFETY: segmentos PT_NOTE são carregados (legíveis) junto com o executável.
+        let notes = unsafe {
+            core::slice::from_raw_parts(base.wrapping_add(h.p_vaddr as usize) as *const u8, h.p_memsz as usize)
+        };
+        // Notas em segmento alinhado a 8 (ex.: .note.gnu.property) são preenchidas até 8.
+        let align = if h.p_align == 8 { 8 } else { 4 };
+        if let Some(id) = find_gnu_build_id(notes, align) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// Percorre as notas ELF de `notes` (cabeçalho de 12 bytes, nome e descrição preenchidos até
+/// `align`) e devolve a descrição da nota GNU de build id.
+fn find_gnu_build_id(mut notes: &[u8], align: usize) -> Option<BuildId> {
+    while let Some((header, rest)) = notes.split_first_chunk::<12>() {
+        let [n0, n1, n2, n3, d0, d1, d2, d3, t0, t1, t2, t3] = *header;
+        let name_size = u32::from_ne_bytes([n0, n1, n2, n3]) as usize;
+        let desc_size = u32::from_ne_bytes([d0, d1, d2, d3]) as usize;
+        let note_type = u32::from_ne_bytes([t0, t1, t2, t3]);
+        let desc_start = name_size.checked_next_multiple_of(align)?;
+        let desc_end = desc_start.checked_add(desc_size)?;
+        if note_type == NT_GNU_BUILD_ID && rest.get(..name_size)? == b"GNU\0" {
+            return BuildId::from_bytes(rest.get(desc_start..desc_end)?);
+        }
+        notes = rest.get(desc_end.checked_next_multiple_of(align)?..)?;
+    }
+    None
+}
+
 
 // ---------------------------------------------------------------- erro fatal
 
@@ -482,5 +534,36 @@ mod tests {
         );
         assert_eq!(kind_from_signal(libc::SIGSEGV, 0, 0x7fff_0000 - 8, 0x7fff_0000, 0x6), FatalKind::StackOverflow);
         assert_eq!(kind_from_signal(libc::SIGFPE, FPE_INTDIV, 0, 0, 0), FatalKind::DivideByZero);
+    }
+
+    /// Nota no formato que o `ld` grava: namesz 4, descsz 20, tipo 3, "GNU\0", 20 bytes.
+    fn note(name: &[u8; 4], note_type: u32, desc: &[u8]) -> Vec<u8> {
+        let mut n = Vec::new();
+        n.extend_from_slice(&4u32.to_ne_bytes());
+        n.extend_from_slice(&u32::try_from(desc.len()).unwrap().to_ne_bytes());
+        n.extend_from_slice(&note_type.to_ne_bytes());
+        n.extend_from_slice(name);
+        n.extend_from_slice(desc);
+        while n.len() % 4 != 0 {
+            n.push(0);
+        }
+        n
+    }
+
+    #[test]
+    fn finds_the_build_id_after_other_notes() {
+        let id: Vec<u8> = (1..=20).collect();
+        let mut notes = note(b"GNU\0", 1, &[0xAA; 6]); // ABI tag, desc com preenchimento
+        notes.extend(note(b"GNU\0", 3, &id));
+        assert_eq!(find_gnu_build_id(&notes, 4).unwrap().as_bytes(), &id[..]);
+    }
+
+    #[test]
+    fn truncated_or_foreign_notes_give_none() {
+        let id = [7u8; 20];
+        let full = note(b"GNU\0", 3, &id);
+        assert!(find_gnu_build_id(&full[..full.len() - 1], 4).is_none());
+        assert!(find_gnu_build_id(&note(b"XYZ\0", 3, &id), 4).is_none());
+        assert!(find_gnu_build_id(&[], 4).is_none());
     }
 }

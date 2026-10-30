@@ -1,3 +1,5 @@
 /target
 *.trace.json
 /crash
+/symbols
+/dist

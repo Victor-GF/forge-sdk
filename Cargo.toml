@@ -50,5 +50,10 @@ panic = "abort"
 [profile.dev.package."*"]
 opt-level = 3
 
+# Release: arquivo e linha no DWARF (line-tables-only: sem tipos nem variáveis, binário menor).
+# O binário completo vai para o armazenamento de símbolos; o jogador recebe a cópia sem eles
+# (tools/release.sh). strip = "none": quem tira os símbolos é o script, depois de guardá-los.
 [profile.release]
 panic = "abort"
+debug = "line-tables-only"
+strip = "none"

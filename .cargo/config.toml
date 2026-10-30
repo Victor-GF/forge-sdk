@@ -1,0 +1,11 @@
+# Build id em todo executável (dev e release), nos dois sistemas: casa o crash report com o
+# binário de símbolos do mesmo build (`forja_os::stack::build_id`, `tools/symbolize.sh`).
+# Explícito para não depender do padrão do gcc de cada distro / do MinGW.
+#
+# Atenção: a variável RUSTFLAGS substitui estas linhas (não soma). O `tools/release.sh`
+# repete a flag nas que ele passa.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--build-id"]
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-Wl,--build-id"]

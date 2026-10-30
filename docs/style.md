@@ -34,15 +34,21 @@ projeto.
 | | Windows | Linux |
 |---|---|---|
 | Alvo | `x86_64-pc-windows-gnu` | `x86_64-unknown-linux-gnu`, Ubuntu desktop nativo |
-| Testado em | Windows | WSL2 (Ubuntu + WSLg) e Xvfb; Ubuntu nativo pendente |
+| Testado em | só verificado (`cargo clippy --target x86_64-pc-windows-gnu`, sem gerar `.exe`)¹ | WSL2 (Ubuntu + WSLg) e Xvfb; Ubuntu nativo pendente |
 | Memória (região, páginas) | `VirtualAlloc` | `mmap` |
 | Relógio e sleep | `QueryPerformanceCounter`, `Sleep` | `clock_gettime`, `nanosleep` |
 | Arquivos | Win32 (`CreateFileW`) | `open`/`write` |
 | Bibliotecas dinâmicas | `LoadLibraryW` | `dlopen` |
 | Erro fatal | filtro de exceções (SEH) | sinais + pilha alternativa |
 | Pilha e módulo | `RtlCaptureStackBackTrace` | unwinder da libgcc + `dladdr` |
+| Build id | GUID+age da entrada CodeView do PE | nota `NT_GNU_BUILD_ID` do ELF |
 | Janela e input | Win32 | X11 (carregada em tempo de execução); em sessão Wayland, via XWayland |
 | Modo headless | sim | sim |
+
+¹ Desde 2026-10-30 o desenvolvimento roda no Linux (WSL): o antivírus corporativo bloqueia
+executáveis recompilados no Windows. O código Windows continua sendo escrito junto (todo
+contrato tem os dois backends) e verificado pelo clippy, mas não é executado até haver
+liberação; o que foi escrito sem rodar está marcado no código.
 
 Para adicionar uma plataforma, siga o roteiro no comentário de `forja_os::Os`: variante e
 `CURRENT`, backend `engine/os/src/<so>.rs` (os testes de contrato dizem se cumpre),
@@ -64,8 +70,8 @@ próprio app desenha a barra de título (`libdecor`), o que custa bem mais que o
 - O que difere de verdade entre sistemas fica escrito no contrato (ex.: granularidade de
   reserva é 64 KB no Windows e uma página no Linux). Código e testes não assumem valores do
   Windows.
-- Os **testes de contrato** (`engine/os/tests/contract.rs`) e os crash tests rodam nos dois
-  sistemas. Validação completa = Windows **e** WSL.
+- Os **testes de contrato** (`engine/os/tests/contract.rs`) e os crash tests valem para os dois
+  sistemas; hoje rodam no WSL, e o Windows é verificado pelo clippy (ver "Validação").
 - `forja_platform` segue o mesmo modelo para a janela: Win32 no Windows, X11 no Linux. A
   `libX11.so.6` é carregada em tempo de execução (`forja_os::library`), então não precisa do
   pacote de desenvolvimento para compilar. Em tempo de execução precisa do pacote `libx11-6`
@@ -80,6 +86,9 @@ próprio app desenha a barra de título (`libdecor`), o que custa bem mais que o
 - No WSL, os artefatos ficam no disco do Linux para não misturar com o `target` do Windows e
   compilar mais rápido: `export CARGO_TARGET_DIR=$HOME/.cache/forja-target`.
 - Quebras de linha: o `.gitattributes` fixa LF para todo texto (scripts `.sh` quebram com CRLF).
+- Limpeza: `tools/clean.sh` apaga os artefatos do cargo (`$CARGO_TARGET_DIR` e `target/`), os
+  crash reports, os traces, `dist/` e `symbols/`. `-n` só lista; `-y` não pergunta. Nunca apaga
+  um `$FORJA_SYMBOLS` fora do projeto.
 
 ## Tipos e funções
 
@@ -141,13 +150,48 @@ próprio app desenha a barra de título (`libdecor`), o que custa bem mais que o
   nada de texto montado em tempo de execução (mensagem de panic, detalhes do erro, log) nem
   endereço absoluto: o arquivo pode sair da máquina do jogador sem levar dados dele. O texto
   livre vai só para o stderr (`[crash] motivo: detalhes`).
-- Para ler a pilha de um crash de produção, guarde o binário de cada versão publicada com
-  símbolos (o papel dos PDBs na Unreal); o jogador recebe o binário sem símbolos.
 - Todo caminho que aborta de propósito chama `crash::fatal` antes (o `abort` do Windows pula
   os handlers de exceção).
 - Perfis com `panic = "abort"`: o hook grava o relatório e encerra; não há unwind.
-- Pilha simbolizada: `tools/symbolize.sh <relatório-ou-log> <exe>` (addr2line, mesmo build);
-  serve também para os avisos `heap geral: ... pilha: ...` do log.
+- Pilha simbolizada: `tools/symbolize.sh <relatório-ou-log> [exe]` (addr2line); serve também
+  para os avisos `heap geral: ... pilha: ...` do log. Ver "Release e símbolos".
+
+## Release e símbolos
+
+O jogo grava só o que existe em qualquer build (módulo+deslocamento e o build id); os nomes
+vêm depois, fora do jogo, com o binário completo guardado. É o modelo da Unreal (PDBs fora
+do pacote), do Breakpad/Crashpad e do Sentry. Nada de simbolizar dentro do processo: aloca,
+pega lock e precisaria dos símbolos na máquina do jogador.
+
+```
+tools/release.sh racing     (no WSL)
+  ├─ binário completo ──► $FORJA_SYMBOLS/racing/<build-id>/   privado; nunca distribuir
+  └─ strip ───────────► dist/racing-<versão>-linux/            o que o jogador recebe
+crash do jogador ──► crash_*.txt (build: <id>) ──► tools/symbolize.sh crash_*.txt
+```
+
+- **Build id**: identificador gravado pelo linker (`--build-id`, ligado no `.cargo/config.toml`
+  para dev e release), lido por `forja_os::stack::build_id()` no `crash::install`. Vai na
+  linha `build:` do relatório e no log (`crash report ativo; build: ...`). Sobrevive ao strip.
+- **Perfil release**: `debug = "line-tables-only"` (arquivo e linha, sem tipos nem variáveis).
+  Quem tira os símbolos é o script, depois de guardá-los.
+- **`tools/release.sh <pacote>`**: compila, guarda o binário completo e um manifesto (versão,
+  commit, alvo, data, rustc) em `$FORJA_SYMBOLS/<pacote>/<build-id>/` (padrão `symbols/`),
+  gera a cópia sem símbolos em `dist/` e confere: mesmo build id, sem DWARF nem tabela de
+  símbolos no `dist/`, nenhum caminho da máquina de build nos dois binários.
+- **Caminhos remapeados** (`--remap-path-prefix`): sem isso, caminhos absolutos com o nome do
+  usuário ficam no binário (mensagens de panic, DWARF), mesmo depois do strip.
+- **`tools/symbolize.sh <relatório>`**: acha o binário pelo build id do arquivo. Com o
+  executável explícito (build de dev), confere o build id antes: binário errado é erro, porque
+  símbolos errados parecem certos. O resultado sai na tela e é salvo ao lado da entrada como
+  `.symbol.txt` (`crash/crash_X.txt` → `crash/crash_X.symbol.txt`).
+- **Guarde o `symbols/` de toda versão publicada** fora do repositório (`symbols/` e `dist/`
+  estão no `.gitignore`). Sem o binário completo, os crash reports daquela versão não são
+  legíveis.
+- Fica de fora de propósito: minidump (copia memória do processo, pode levar dados do
+  jogador), envio automático (exige consentimento, LGPD, e servidor), assinatura e CI.
+- Windows: o `forja_os` já lê o build id do PE, mas o release Windows (MinGW no WSL) fica
+  para quando o `.exe` puder ser executado.
 
 ## Usa / não usa
 
@@ -172,9 +216,13 @@ indexação (`clippy.toml`).
 
 ## Validação
 
-Depois de cada mudança, no Windows e no WSL (antes de uma versão, também no Ubuntu nativo):
+Depois de cada mudança, no WSL (antes de uma versão, também no Ubuntu nativo):
 
 ```
 cargo test --workspace
 cargo clippy --workspace --all-targets
+cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu
 ```
+
+A última linha verifica o código Windows sem gerar executável (precisa de
+`rustup target add x86_64-pc-windows-gnu` no WSL, uma vez).
