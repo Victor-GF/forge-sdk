@@ -1,0 +1,13 @@
+[package]
+name = "forge_runtime"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "forge"
+path = "src/main.rs"
+
+[dependencies]
+forge_core.workspace = true
+forge_os.workspace = true

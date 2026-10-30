@@ -1,0 +1,11 @@
+[package]
+name = "forge_os"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+forge_core.workspace = true
