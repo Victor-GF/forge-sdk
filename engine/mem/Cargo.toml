@@ -4,8 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-forja_core.workspace = true
-forja_diag.workspace = true
 forja_os.workspace = true
 
 [lints]

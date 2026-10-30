@@ -20,7 +20,7 @@
 //! do executável) diz qual é. Ver "Release e símbolos" em `docs/style.md`.
 //!
 //! O relatório é montado num buffer estático (`REPORT_CAPACITY`) e gravado pelo `forja_os`:
-//! nada é alocado, então funciona sem memória livre e com o heap geral proibido.
+//! nada é alocado, então funciona sem memória livre.
 //! Pouca stack é usada, porque no stack overflow o handler roda numa reserva pequena.
 
 use core::cell::UnsafeCell;
@@ -87,8 +87,7 @@ static CRASH_THREAD: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------- API
 
-/// Instala o hook de panic e o handler de erro fatal do SO. Chame no início do `main`, antes
-/// de `global::end_startup()`.
+/// Instala o hook de panic e o handler de erro fatal do SO. Chame no início do `main`.
 pub fn install(config: CrashConfig) {
     let build_id = stack::build_id();
     if SHARED.lock.try_lock(u32::MAX) {
@@ -96,7 +95,7 @@ pub fn install(config: CrashConfig) {
         unsafe { *SHARED.installed.get() = Installed { config, build_id } };
         SHARED.lock.unlock();
     }
-    // No log também: os avisos com pilha do heap geral são simbolizados por ele.
+    // No log também: um log com pilhas (módulo+deslocamento) é simbolizado por ele.
     let mut id_buf = [0u8; 2 * stack::BUILD_ID_MAX];
     let mut id_text = TextBuf::new(&mut id_buf);
     write_build_id(&mut id_text, build_id);

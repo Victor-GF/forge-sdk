@@ -9,41 +9,19 @@
 //! A região nunca é devolvida ao SO (vive até o processo acabar); por isso as arenas
 //! recortadas dela podem ser movidas livremente sem risco de apontar para memória liberada.
 
-use core::sync::atomic::Ordering;
-
 use forja_os::memory;
 
 pub use forja_os::memory::{PageInfo, page_info};
 
 use crate::arena::{Arena, bump_reserve};
-use crate::stats::{REGION_CAPACITY, REGION_PAGE_SIZE, REGION_USED};
 
-/// Dona da região. Fica na thread principal; o que sai dela (arenas, `ThreadMemory`) pode ir
-/// para outras threads.
+/// Dona da região. Recortar exige `&mut`, então só uma thread recorta; as arenas que saem dela
+/// podem ir para outras threads.
 pub struct MemoryRegion {
     base: *mut u8,
     capacity: usize,
     used: usize,
     page_size: usize,
-}
-
-/// Orçamento das arenas de uma thread, em bytes (cada arena é arredondada para cima até a
-/// página).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ThreadMemoryDesc {
-    pub persistent: usize,
-    pub level: usize,
-    pub frame: usize,
-}
-
-/// As arenas de uma thread, com vidas diferentes:
-/// - `persistent`: o programa inteiro (nunca reseta)
-/// - `level`: reseta ao trocar de fase/pista
-/// - `frame`: reseta todo frame
-pub struct ThreadMemory {
-    pub persistent: Arena,
-    pub level: Arena,
-    pub frame: Arena,
 }
 
 /// Arredonda `v` para cima até múltiplo de `m` (potência de 2).
@@ -63,29 +41,19 @@ impl MemoryRegion {
         let pages = page_info();
         let capacity = round_up_pow2(capacity, pages.allocation_granularity)?;
         let base = memory::reserve(capacity)?;
-        REGION_CAPACITY.store(capacity, Ordering::Relaxed);
-        REGION_PAGE_SIZE.store(pages.page_size, Ordering::Relaxed);
         Some(MemoryRegion { base, capacity, used: 0, page_size: pages.page_size })
     }
 
     /// Recorta uma arena começando numa página, com capacidade arredondada para página.
-    pub fn arena(&mut self, name: &'static str, capacity: usize) -> Option<Arena> {
+    /// `None` se não couber no que sobra da região.
+    pub fn arena(&mut self, capacity: usize) -> Option<Arena> {
         let capacity = round_up_pow2(capacity, self.page_size)?;
         let (start, end) = bump_reserve(self.base as usize, self.used, capacity, self.page_size, self.capacity)?;
         // SAFETY: a faixa [start, end) está dentro da região, é exclusiva (o cursor avança logo
         // abaixo) e a região nunca é liberada.
-        let arena = unsafe { Arena::from_raw(name, self.base.wrapping_add(start), capacity) }?;
+        let arena = unsafe { Arena::from_raw(self.base.wrapping_add(start), capacity) };
         self.used = end;
-        REGION_USED.store(end, Ordering::Relaxed);
         Some(arena)
-    }
-
-    pub fn thread_memory(&mut self, desc: &ThreadMemoryDesc) -> Option<ThreadMemory> {
-        Some(ThreadMemory {
-            persistent: self.arena("persistent", desc.persistent)?,
-            level: self.arena("level", desc.level)?,
-            frame: self.arena("frame", desc.frame)?,
-        })
     }
 
     pub fn used(&self) -> usize {
@@ -124,20 +92,19 @@ mod tests {
         assert_eq!(r.capacity(), round_up_pow2(4 * page, pages.allocation_granularity).unwrap());
         assert_eq!(r.page_size(), page);
 
-        let desc = ThreadMemoryDesc { persistent: 1000, level: 1, frame: page + 1 };
-        let tm = r.thread_memory(&desc).unwrap();
-        // cada arena ganha a página inteira; frame ocupa duas
-        assert_eq!(tm.persistent.stats().capacity, page);
-        assert_eq!(tm.level.stats().capacity, page);
-        assert_eq!(tm.frame.stats().capacity, 2 * page);
-        assert_eq!(r.used(), 4 * page);
+        // cada arena ganha a página inteira; a segunda ocupa duas
+        let small = r.arena(1000).unwrap();
+        let big = r.arena(page + 1).unwrap();
+        assert_eq!(small.capacity(), page);
+        assert_eq!(big.capacity(), 2 * page);
+        assert_eq!(r.used(), 3 * page);
 
-        let s = tm.frame.alloc_slice(2 * page, 0xABu8).unwrap();
+        let s = big.alloc_slice(2 * page, 0xABu8).unwrap();
         assert!((s.as_ptr() as usize).is_multiple_of(page));
         assert_eq!(s[2 * page - 1], 0xAB);
-        assert_eq!(tm.level.used(), 0);
+        assert_eq!(small.used(), 0);
 
         // não cabe mais que a região
-        assert!(r.arena("grande", r.capacity() - r.used() + 1).is_none());
+        assert!(r.arena(r.capacity() - r.used() + 1).is_none());
     }
 }

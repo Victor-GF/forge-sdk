@@ -73,39 +73,7 @@ fn arena_oom() {
     let o = run("oom");
     check_common(&o, "OOM de arena");
     assert!(o.stderr.contains("arena 'frame' sem espaço: pedido de 1000 bytes"), "{}", o.stderr);
-    assert!(o.stderr.contains("passou de 90% do orçamento"), "{}", o.stderr);
     assert!(!o.report.contains("arena 'frame'"), "{}", o.report);
-}
-
-#[test]
-fn allocation_with_forbidden_heap() {
-    let o = run("forbid");
-    check_common(&o, "alocação com o heap geral proibido");
-    assert!(o.stderr.contains("pedido de 100 bytes"), "{}", o.stderr);
-    assert!(o.stderr.contains("HeapPolicy::Forbid"), "{}", o.stderr);
-}
-
-#[test]
-fn heap_out_of_memory() {
-    let o = run("heap_oom");
-    check_common(&o, "heap geral sem memória");
-    assert!(o.stderr.contains("o sistema recusou 70368744177664 bytes"), "{}", o.stderr);
-}
-
-#[test]
-fn heap_reports_each_call_site_once_without_crashing() {
-    let dir: PathBuf = std::env::temp_dir().join(format!("forja_crash_report_{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    let output = Command::new(env!("CARGO_BIN_EXE_crash_tests")).arg("report").arg(&dir).output().unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert_eq!(output.status.code(), Some(0), "{stderr}");
-    assert!(!dir.exists(), "não deveria haver crash report");
-    assert_eq!(stderr.matches("heap geral: alocação de").count(), 2, "{stderr}");
-    assert!(stderr.contains("heap geral: alocação de 100 bytes"), "{stderr}");
-    assert!(stderr.contains("heap geral: alocação de 2000 bytes"), "{stderr}");
-    assert!(stderr.contains(&format!("pilha: {MODULE}")), "{stderr}");
-    assert!(stderr.contains("heap geral passou do orçamento"), "{stderr}");
-    assert!(stderr.contains("report: 2 pontos de chamada relatados"), "{stderr}");
 }
 
 #[test]
@@ -150,7 +118,7 @@ fn invalid_utf8_arg() -> std::ffi::OsString {
 
 #[test]
 fn invalid_utf8_argument_is_an_error_not_a_crash() {
-    for args in [vec![invalid_utf8_arg()], vec!["report".into(), invalid_utf8_arg()]] {
+    for args in [vec![invalid_utf8_arg()], vec!["panic".into(), invalid_utf8_arg()]] {
         let output = Command::new(env!("CARGO_BIN_EXE_crash_tests")).args(&args).output().unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(2), "{stderr}");

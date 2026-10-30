@@ -105,7 +105,7 @@ próprio app desenha a barra de título (`libdecor`), o que custa bem mais que o
   não compila.
 - **Enums no lugar de constantes numéricas** (`EventKind`, `MouseButton`), `#[repr(u8)]` quando
   o layout importa.
-- **Newtypes para ids e índices** (`Zone(u16)`, `Counter(u16)`, `Key(u8)`, `Mark`): não dá para
+- **Newtypes para ids e índices** (`Zone(u16)`, `Counter(u16)`, `Key(u8)`): não dá para
   passar um pelo outro.
 - **Campos privados quando há invariante** (`Arena`, `TextBuf`); `pub` quando é só dado.
 
@@ -113,19 +113,16 @@ próprio app desenha a barra de título (`libdecor`), o que custa bem mais que o
 
 - **Uma chamada ao SO.** `MemoryRegion::reserve` faz um único `VirtualAlloc` com o orçamento
   total do jogo. Tudo sai dali.
-- **Cada thread tem a sua `ThreadMemory`**: arenas `persistent` (programa inteiro), `level`
-  (zera ao trocar de fase/pista) e `frame` (zera todo frame). Arenas são `Send` mas nunca
-  `Sync`: podem mudar de thread, nunca ser compartilhadas. O compilador garante.
-- **Heap geral monitorado** (`forja_mem::global`, o `#[global_allocator]`), no modelo da Unreal
-  (FMalloc + LLM + Memory Insights). Atende só o que não controlamos (std, dependências):
-  - backend: heap do sistema (`HeapAlloc`/LFH), trocável sem mudar quem usa;
-  - contabilidade: bytes vivos, pico e alocações, por tag (`AllocTag`, por thread);
-  - política: `Startup` (aloca calado), `Report` (depois de `global::end_startup()`: cada ponto
-    de chamada que alocar vai para o log uma vez, com a pilha), `Forbid` (fatal; testes e CI);
-  - orçamento (`global::set_budget`): passar dele avisa no log;
-  - OOM do sistema e liberação com tamanho errado (heap corrompido) geram crash report;
-  - em debug, memória nova sai com `0xCD` e liberada com `0xDD`.
-  - A meta do jogo é **0 alocações por frame** no heap geral (contador no trace).
+- **Arenas recortadas da região** (`region.arena(bytes)`): o jogo cria as que precisar, por
+  tempo de vida (ex.: `persistent`, que nunca zera, e `frame`, que zera todo frame com
+  `reset`). Arenas são `Send` mas nunca `Sync`: podem mudar de thread, nunca ser
+  compartilhadas. O compilador garante.
+- **Arena é só o cursor**, dentro dela (`Cell`): sem atômicos, locks ou registro global. A API
+  é `alloc_bytes`/`alloc_slice`/`alloc_value`, `reset`, `used` e `capacity`.
+- **Heap geral só conta** (`forja_mem::global`, o `#[global_allocator]`): atende o que não
+  controlamos (std, dependências), repassa ao heap do sistema e conta alocações e bytes vivos
+  (`global::stats()`). A meta do jogo é **0 alocações por frame** nele (contador no trace).
+  Relatório com pilha, tags ou orçamento só voltam quando houver um caso real que precise.
 - **Containers da std não são usados** no runtime da engine e do jogo. No lugar:
   - listas e tabelas: `arena.alloc_slice` (capacidade fixa decidida na criação)
   - texto: `TextBuf` sobre um buffer da stack ou da arena + `write!`
@@ -134,9 +131,9 @@ próprio app desenha a barra de título (`libdecor`), o que custa bem mais que o
 - **Páginas**: a região é arredondada para o bloco de reserva do SO (64 KB) e cada arena começa
   numa página (4 KB) com tamanho múltiplo de página; os bytes do arredondamento ficam com a
   própria arena. Dentro da arena não há alinhamento a página: os dados ficam colados.
-- **Orçamento visível**: ao passar de 90%, a arena avisa no log (uma vez). Falta de espaço
-  devolve `None`; quando for fatal, `arena.oom_fatal()` grava o crash report e escreve no
-  stderr o pedido que falhou e o uso da arena.
+- **Falta de espaço devolve `None`**: quem chama decide. Na inicialização, sair com erro; no
+  meio do jogo, quando for fatal, `crash::fatal("OOM de arena", ...)` com o pedido e o uso
+  da arena nos detalhes (vão para o stderr, não para o relatório).
 - **Stack**: 1 MB na thread principal do Windows. Buffers grandes vão para arena.
 
 ## Diagnóstico
@@ -153,8 +150,8 @@ próprio app desenha a barra de título (`libdecor`), o que custa bem mais que o
 - Todo caminho que aborta de propósito chama `crash::fatal` antes (o `abort` do Windows pula
   os handlers de exceção).
 - Perfis com `panic = "abort"`: o hook grava o relatório e encerra; não há unwind.
-- Pilha simbolizada: `tools/symbolize.sh <relatório-ou-log> [exe]` (addr2line); serve também
-  para os avisos `heap geral: ... pilha: ...` do log. Ver "Release e símbolos".
+- Pilha simbolizada: `tools/symbolize.sh <relatório-ou-log> [exe]` (addr2line). Ver
+  "Release e símbolos".
 
 ## Release e símbolos
 

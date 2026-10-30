@@ -1,13 +1,13 @@
 //! Runtime info: exemplo que abre uma janela e mostra no terminal tudo que o runtime sabe sobre
 //! o sistema e sobre si mesmo: SO, páginas, relógio, memória da máquina e do processo, região e
-//! arenas da forja, heap geral por tag, janela, tempo de frame e input.
+//! arenas da forja, heap geral, janela, tempo de frame e input.
 //!
 //! Faz o papel do jogo (dono do `main` e do loop), mas sem jogo: serve para ver a infraestrutura
 //! da engine funcionando de verdade.
 //!
 //! Controles (com a janela em foco):
 //! - F1: imprime o relatório de novo (com o input daquele instante)
-//! - F2: aloca no heap geral de propósito; o log mostra o ponto de chamada com a pilha
+//! - F2: aloca no heap geral de propósito (aparece no contador por frame do título)
 //! - F9: erro fatal de propósito (`crash::fatal`); grava o crash report em `crash/`
 //! - Esc ou fechar a janela: sai, imprimindo o relatório final
 //!
@@ -16,8 +16,8 @@
 //! `runtime_info --headless N`: sem janela, roda N frames e imprime os relatórios (máquinas sem
 //! servidor gráfico).
 //!
-//! Memória: como no jogo, uma reserva ao SO e a `ThreadMemory` da thread principal. O histórico
-//! de frames fica na arena `persistent`; título e relatório saem da `frame`.
+//! Memória: como no jogo, uma reserva ao SO recortada em duas arenas. O histórico de frames
+//! fica na `persistent`; título e relatório saem da `frame` (zerada todo frame).
 
 use core::fmt::{self, Write};
 use std::process::ExitCode;
@@ -26,9 +26,8 @@ use forja_core::text::TextBuf;
 use forja_diag::crash::{self, CrashConfig};
 use forja_diag::log;
 use forja_mem::arena::Arena;
-use forja_mem::global::{self, AllocTag, HeapStats};
-use forja_mem::region::{MemoryRegion, ThreadMemoryDesc, page_info};
-use forja_mem::stats::{self, ARENAS_MAX};
+use forja_mem::global::{self, HeapStats};
+use forja_mem::region::{MemoryRegion, page_info};
 use forja_os::{process, time};
 use forja_platform::input::{Input, Key, MouseButton};
 use forja_platform::{Platform, PlatformError, WindowDesc};
@@ -42,12 +41,10 @@ static ALLOCATOR: forja_mem::global::GlobalAllocator = forja_mem::global::Global
 const KB: usize = 1024;
 const MB: usize = 1024 * KB;
 const GB: u64 = 1024 * 1024 * 1024;
-const MAIN_THREAD_MEMORY: ThreadMemoryDesc =
-    ThreadMemoryDesc { persistent: MB, level: MB, frame: 256 * KB };
+const PERSISTENT_ARENA: usize = MB;
+const FRAME_ARENA: usize = 256 * KB;
 const REGION_SIZE: usize = 8 * MB;
 const REGION_SIZE_MB: usize = REGION_SIZE / MB;
-/// Heap geral: só std e dependências. O exemplo não usa nada depois da inicialização (exceto F2).
-const HEAP_BUDGET: usize = MB;
 
 /// Texto do relatório, recortado da arena do frame a cada impressão.
 const REPORT_CAPACITY: usize = 16 * KB;
@@ -74,7 +71,7 @@ struct Startup {
     /// 0 = a std não soube dizer.
     logical_cpus: usize,
     main_thread_id: u64,
-    /// Heap geral no fim da inicialização (antes de `global::end_startup`).
+    /// Heap geral no fim da inicialização.
     heap: HeapStats,
 }
 
@@ -124,6 +121,7 @@ impl FrameHistory<'_> {
 struct ReportInput<'a> {
     startup: &'a Startup,
     region: &'a MemoryRegion,
+    persistent: &'a Arena,
     platform: &'a Platform,
     history: &'a FrameHistory<'a>,
     heap_allocations_last_frame: u64,
@@ -133,19 +131,20 @@ struct ReportInput<'a> {
 
 fn main() -> ExitCode {
     crash::install(CrashConfig { app: "runtime_info", version: env!("CARGO_PKG_VERSION"), dir: "crash" });
-    global::set_budget(HEAP_BUDGET);
     let start_ticks = time::ticks();
 
     let Some(mut region) = MemoryRegion::reserve(REGION_SIZE) else {
         log::error(format_args!("sem memória: o SO recusou {REGION_SIZE_MB} MB"));
         return ExitCode::FAILURE;
     };
-    let Some(mut memory) = region.thread_memory(&MAIN_THREAD_MEMORY) else {
-        log::error(format_args!("a memória da thread principal não cabe em {REGION_SIZE_MB} MB"));
+    let (Some(persistent), Some(mut frame)) = (region.arena(PERSISTENT_ARENA), region.arena(FRAME_ARENA))
+    else {
+        log::error(format_args!("as arenas não cabem em {REGION_SIZE_MB} MB"));
         return ExitCode::FAILURE;
     };
-    let Some(dts) = memory.persistent.alloc_slice(FRAME_HISTORY, 0.0f32) else {
-        memory.persistent.oom_fatal()
+    let Some(dts) = persistent.alloc_slice(FRAME_HISTORY, 0.0f32) else {
+        log::error(format_args!("o histórico de frames não cabe na arena persistent"));
+        return ExitCode::FAILURE;
     };
     let mut history = FrameHistory { dts, next: 0, filled: 0 };
 
@@ -177,12 +176,11 @@ fn main() -> ExitCode {
     };
 
     // Ainda na inicialização: a std aloca o buffer do stdout no primeiro uso e consulta os
-    // núcleos; depois de `end_startup` isso apareceria no log como alocação fora de hora.
+    // núcleos; aqui isso entra na conta da inicialização, não na do loop.
     let logical_cpus = std::thread::available_parallelism().map_or(0, |n| n.get());
     write_stdout(b"Forja runtime info | F1 relatorio | F2 aloca no heap geral | F9 crash | Esc sai\n");
     let startup =
         Startup { start_ticks, logical_cpus, main_thread_id: process::thread_id(), heap: global::stats() };
-    global::end_startup();
 
     let mut heap_allocations_before = global::stats().allocations;
     let mut heap_allocations_last_frame = 0u64;
@@ -193,11 +191,12 @@ fn main() -> ExitCode {
         &ReportInput {
             startup: &startup,
             region: &region,
+            persistent: &persistent,
             platform: &platform,
             history: &history,
             heap_allocations_last_frame,
         },
-        &memory.frame,
+        &frame,
     );
 
     loop {
@@ -213,11 +212,12 @@ fn main() -> ExitCode {
                 &ReportInput {
                     startup: &startup,
                     region: &region,
+                    persistent: &persistent,
                     platform: &platform,
                     history: &history,
                     heap_allocations_last_frame,
                 },
-                &memory.frame,
+                &frame,
             );
         }
         if platform.input.key_pressed(KEY_HEAP_ALLOC) {
@@ -230,7 +230,7 @@ fn main() -> ExitCode {
         let since_title = platform.frame_start.saturating_sub(title_ticks);
         if time::ticks_to_seconds(since_title, platform.ticks_per_second) >= TITLE_INTERVAL_SECONDS {
             title_ticks = platform.frame_start;
-            update_title(&platform, &history, heap_allocations_last_frame, &memory.frame);
+            update_title(&platform, &history, heap_allocations_last_frame, &frame);
         }
 
         if !platform.is_headless() {
@@ -240,7 +240,7 @@ fn main() -> ExitCode {
         let heap_allocations = global::stats().allocations;
         heap_allocations_last_frame = heap_allocations.saturating_sub(heap_allocations_before);
         heap_allocations_before = heap_allocations;
-        memory.frame.reset();
+        frame.reset();
     }
 
     print_report(
@@ -248,18 +248,18 @@ fn main() -> ExitCode {
         &ReportInput {
             startup: &startup,
             region: &region,
+            persistent: &persistent,
             platform: &platform,
             history: &history,
             heap_allocations_last_frame,
         },
-        &memory.frame,
+        &frame,
     );
     platform.shutdown();
     ExitCode::SUCCESS
 }
 
-/// `--headless N` (N opcional). Lido na inicialização: a std aloca para os argumentos, o que é
-/// permitido antes de `global::end_startup()`.
+/// `--headless N` (N opcional). Lido na inicialização (a std aloca para os argumentos).
 ///
 /// `args_os` em vez de `args`: `args` entra em pânico se algum argumento não for UTF-8 válido.
 /// Aqui um argumento assim é só ignorado (e um N inválido vira o padrão).
@@ -278,17 +278,13 @@ fn write_stdout(bytes: &[u8]) {
     let _ = std::io::Write::write_all(&mut std::io::stdout(), bytes);
 }
 
-/// F2: aloca e libera no heap geral, com a tag `tools`. Depois de `end_startup`, o heap geral
-/// escreve no log o ponto de chamada com a pilha (uma vez por ponto); as próximas só contam.
+/// F2: aloca e libera no heap geral; o contador por frame do título mostra a alocação.
 fn heap_alloc_demo() {
-    let previous = global::set_thread_tag(AllocTag::Tools);
     let block = std::hint::black_box(Vec::<u8>::with_capacity(HEAP_DEMO_BYTES));
     drop(block);
-    global::set_thread_tag(previous);
-    let tools = global::tag_stats(AllocTag::Tools);
     log::info(format_args!(
-        "F2: {HEAP_DEMO_BYTES} bytes alocados e liberados no heap geral (tag tools: {} alocações)",
-        tools.allocations
+        "F2: {HEAP_DEMO_BYTES} bytes alocados e liberados no heap geral ({} alocações no total)",
+        global::stats().allocations
     ));
 }
 
@@ -324,7 +320,7 @@ fn print_report(heading: &str, r: &ReportInput, frame_arena: &Arena) {
     write_os(&mut t, r.startup);
     write_machine_memory(&mut t);
     write_process_memory(&mut t);
-    write_forja_memory(&mut t, r.region);
+    write_forja_memory(&mut t, r.region, r.persistent, frame_arena);
     write_heap(&mut t, r.startup, r.heap_allocations_last_frame);
     write_platform(&mut t, r.platform, r.history);
     write_input(&mut t, &r.platform.input, r.platform.is_headless());
@@ -370,7 +366,7 @@ fn write_build(t: &mut TextBuf) {
     row(t, "app", format_args!("runtime_info {}", env!("CARGO_PKG_VERSION")));
     row(t, "plataforma", format_args!("{} ({})", forja_os::CURRENT.name(), std::env::consts::ARCH));
     if cfg!(debug_assertions) {
-        row(t, "perfil", format_args!("debug (heap geral: memória nova 0xCD, liberada 0xDD)"));
+        row(t, "perfil", format_args!("debug"));
     } else {
         row(t, "perfil", format_args!("release"));
     }
@@ -439,7 +435,7 @@ fn write_process_memory(t: &mut TextBuf) {
     }
 }
 
-fn write_forja_memory(t: &mut TextBuf, region: &MemoryRegion) {
+fn write_forja_memory(t: &mut TextBuf, region: &MemoryRegion, persistent: &Arena, frame: &Arena) {
     section(t, "memória da forja (uma reserva ao SO)");
     let capacity = region.capacity() as u64;
     let used = region.used() as u64;
@@ -454,22 +450,15 @@ fn write_forja_memory(t: &mut TextBuf, region: &MemoryRegion) {
             region.page_size()
         ),
     );
-    let count = stats::arena_count();
-    row(t, "arenas", format_args!("{count} de {ARENAS_MAX}  (usado agora / pico / capacidade, em bytes)"));
-    for i in 0..count {
-        let Some(a) = stats::arena_snapshot(i) else {
-            continue;
-        };
+    row(t, "arenas", format_args!("usado agora / capacidade, em bytes"));
+    for (name, arena) in [("persistent", persistent), ("frame", frame)] {
         let _ = writeln!(
             t,
-            "    {:<12} {:>9} / {:>9} / {:>9} ({:>3.0}% no pico), {} alocações, {} falhas",
-            a.name,
-            a.used,
-            a.peak,
-            a.capacity,
-            percent(a.peak as f64, a.capacity as f64),
-            a.allocations,
-            a.failures
+            "    {:<12} {:>9} / {:>9} ({:>3.0}%)",
+            name,
+            arena.used(),
+            arena.capacity(),
+            percent(arena.used() as f64, arena.capacity() as f64)
         );
     }
 }
@@ -477,13 +466,8 @@ fn write_forja_memory(t: &mut TextBuf, region: &MemoryRegion) {
 fn write_heap(t: &mut TextBuf, s: &Startup, heap_allocations_last_frame: u64) {
     section(t, "heap geral (std e dependências)");
     let h = global::stats();
-    row(t, "política", format_args!("{:?}", h.policy));
-    row(
-        t,
-        "bytes vivos",
-        format_args!("{} (pico {}, orçamento {})", h.live_bytes, h.peak_bytes, h.budget),
-    );
-    row(t, "alocações / liberações", format_args!("{} / {}", h.allocations, h.frees));
+    row(t, "bytes vivos", format_args!("{}", h.live_bytes));
+    row(t, "alocações", format_args!("{}", h.allocations));
     row(
         t,
         "na inicialização",
@@ -495,23 +479,6 @@ fn write_heap(t: &mut TextBuf, s: &Startup, heap_allocations_last_frame: u64) {
         format_args!("{} alocações", h.allocations.saturating_sub(s.heap.allocations)),
     );
     row(t, "no último frame", format_args!("{heap_allocations_last_frame} alocações (meta: 0)"));
-    row(
-        t,
-        "pontos de chamada no log",
-        format_args!("{} ({} sem espaço na tabela)", h.reported_sites, h.untracked_reports),
-    );
-    for tag in AllocTag::ALL {
-        let ts = global::tag_stats(tag);
-        if ts.allocations > 0 {
-            let _ = writeln!(
-                t,
-                "    tag {:<12} {:>9} bytes vivos, {} alocações",
-                tag.name(),
-                ts.live_bytes,
-                ts.allocations
-            );
-        }
-    }
 }
 
 fn write_platform(t: &mut TextBuf, p: &Platform, history: &FrameHistory) {

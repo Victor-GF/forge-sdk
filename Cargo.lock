@@ -33,8 +33,6 @@ dependencies = [
 name = "forja_mem"
 version = "0.1.0"
 dependencies = [
- "forja_core",
- "forja_diag",
  "forja_os",
 ]
 

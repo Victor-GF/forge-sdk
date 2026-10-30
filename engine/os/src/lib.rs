@@ -12,8 +12,8 @@
 //! - só este crate (e o backend de janela do `forja_platform`) depende de `windows-sys`/`libc`;
 //! - os testes de contrato (`tests/contract.rs`) rodam iguais em todos os sistemas.
 //!
-//! Nada aqui aloca no heap do Rust: tudo pode ser chamado com o heap geral em
-//! `HeapPolicy::Forbid`. (O carregador de bibliotecas do SO usa memória própria.)
+//! Nada aqui aloca no heap do Rust: tudo pode ser chamado dentro do handler de erro fatal.
+//! (O carregador de bibliotecas do SO usa memória própria.)
 
 // ---------------------------------------------------------------- plataformas suportadas
 //

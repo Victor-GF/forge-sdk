@@ -10,10 +10,9 @@
 //! entrada roteirizada. Serve para testes, depuração (gdb), profiling (cachegrind, perf) e
 //! máquinas sem servidor gráfico.
 //!
-//! Memória: uma única reserva ao SO com o orçamento abaixo; a thread principal usa a sua
-//! `ThreadMemory` (persistent, level, frame). O heap geral (std/dependências) tem orçamento
-//! próprio e, depois da inicialização, cada ponto de chamada que alocar aparece no log com a
-//! pilha. A meta do jogo é zero alocações no heap geral por frame (contador no trace).
+//! Memória: uma única reserva ao SO com o orçamento abaixo, recortada em duas arenas:
+//! `persistent` (o programa inteiro) e `frame` (zerada todo frame). O heap geral (std e
+//! dependências) só conta: a meta do jogo é zero alocações nele por frame (contador no trace).
 
 use core::fmt::Write;
 use std::process::ExitCode;
@@ -25,7 +24,7 @@ use forja_diag::log;
 use forja_inspect::{ChromeTraceExport, Counter, ENABLED as PROFILER_ENABLED, ProfEvent, Profiler, Zone};
 use forja_mem::arena::Arena;
 use forja_mem::global;
-use forja_mem::region::{MemoryRegion, ThreadMemory, ThreadMemoryDesc};
+use forja_mem::region::MemoryRegion;
 use forja_os::file::FileWriter;
 use forja_platform::input::Key;
 use forja_platform::{Platform, PlatformError, WindowDesc};
@@ -37,13 +36,11 @@ static ALLOCATOR: forja_mem::global::GlobalAllocator = forja_mem::global::Global
 // ---------------------------------------------------------------- orçamento de memória
 
 const MB: usize = 1024 * 1024;
-const MAIN_THREAD_MEMORY: ThreadMemoryDesc =
-    ThreadMemoryDesc { persistent: 32 * MB, level: 16 * MB, frame: 4 * MB };
+const PERSISTENT_ARENA: usize = 32 * MB;
+const FRAME_ARENA: usize = 4 * MB;
 /// Só a thread principal por enquanto; sobra para as arenas de outras threads no futuro.
 const REGION_SIZE: usize = 64 * MB;
 const REGION_SIZE_MB: usize = REGION_SIZE / MB;
-/// Heap geral: só std e dependências. Hoje o jogo usa 0 bytes; o orçamento é o alarme.
-const HEAP_BUDGET: usize = MB;
 
 // ---------------------------------------------------------------- profiler
 
@@ -149,20 +146,21 @@ impl FrameStats {
 
 fn main() -> ExitCode {
     crash::install(CrashConfig { app: "racing", version: env!("CARGO_PKG_VERSION"), dir: "crash" });
-    global::set_budget(HEAP_BUDGET);
 
     let Some(mut region) = MemoryRegion::reserve(REGION_SIZE) else {
         log::error(format_args!("sem memória: o SO recusou {REGION_SIZE_MB} MB"));
         return ExitCode::FAILURE;
     };
-    let Some(mut memory) = region.thread_memory(&MAIN_THREAD_MEMORY) else {
-        log::error(format_args!("a memória da thread principal não cabe em {REGION_SIZE_MB} MB"));
+    let (Some(persistent), Some(mut frame)) = (region.arena(PERSISTENT_ARENA), region.arena(FRAME_ARENA))
+    else {
+        log::error(format_args!("as arenas não cabem em {REGION_SIZE_MB} MB"));
         return ExitCode::FAILURE;
     };
 
     let capacity = if PROFILER_ENABLED { PROFILER_CAPACITY } else { 0 };
-    let Some(events) = memory.persistent.alloc_slice(capacity, ProfEvent::EMPTY) else {
-        memory.persistent.oom_fatal()
+    let Some(events) = persistent.alloc_slice(capacity, ProfEvent::EMPTY) else {
+        log::error(format_args!("o profiler ({capacity} eventos) não cabe na arena persistent"));
+        return ExitCode::FAILURE;
     };
     let mut prof = Profiler::new(&PROFILER_NAMES, events);
 
@@ -195,13 +193,11 @@ fn main() -> ExitCode {
 
     let h = global::stats();
     log::info(format_args!(
-        "inicialização ({}): {} bytes vivos no heap geral em {} alocações; a partir daqui cada \
-         ponto de chamada que alocar vai para o log",
+        "inicialização ({}): {} bytes vivos no heap geral em {} alocações",
         forja_os::CURRENT.name(),
         h.live_bytes,
         h.allocations
     ));
-    global::end_startup();
 
     let mut car = Car { speed: 0.0 };
     let mut stats = FrameStats::EMPTY;
@@ -229,7 +225,7 @@ fn main() -> ExitCode {
             car.update(platform.input.key_down(KEY_THROTTLE), platform.input.key_down(KEY_BRAKE), dt);
         }
         stats.add_frame(platform.dt);
-        stats.update_title(&platform, &car, &memory.frame);
+        stats.update_title(&platform, &car, &frame);
         prof.end(ZONE_UPDATE);
 
         // Headless roda o mais rápido possível (profiling); com janela, trava em 60 fps.
@@ -239,7 +235,7 @@ fn main() -> ExitCode {
             prof.end(ZONE_WAIT);
         }
 
-        end_frame(&mut prof, &mut memory.frame, &mut heap_allocations_before);
+        end_frame(&mut prof, &mut frame, &mut heap_allocations_before);
         prof.end(ZONE_FRAME);
     }
 
@@ -250,12 +246,11 @@ fn main() -> ExitCode {
     ));
     platform.shutdown();
     save_trace(&prof);
-    log_memory(&memory);
+    log_memory(&persistent, &frame);
     ExitCode::SUCCESS
 }
 
-/// `--headless N` (N opcional). Lido na inicialização: a std aloca para os argumentos, o que é
-/// permitido antes de `global::end_startup()`.
+/// `--headless N` (N opcional). Lido na inicialização (a std aloca para os argumentos).
 ///
 /// `args_os` em vez de `args`: `args` entra em pânico se algum argumento não for UTF-8 válido.
 /// Aqui um argumento assim é só ignorado (e um N inválido vira o padrão).
@@ -318,23 +313,15 @@ fn save_trace(prof: &Profiler) {
     }
 }
 
-fn log_memory(memory: &ThreadMemory) {
-    for a in [&memory.persistent, &memory.level, &memory.frame] {
-        let s = a.stats();
-        log::info(format_args!(
-            "arena {:<11} pico {:>9} / {:>9} bytes, {} alocações, {} falhas",
-            a.name(),
-            s.peak,
-            s.capacity,
-            s.allocations,
-            s.failures
-        ));
+/// Uso das arenas no fim (a `frame` acabou de ser zerada; o uso por frame está no trace).
+fn log_memory(persistent: &Arena, frame: &Arena) {
+    for (name, a) in [("persistent", persistent), ("frame", frame)] {
+        log::info(format_args!("arena {name:<11} {:>9} / {:>9} bytes", a.used(), a.capacity()));
     }
     let h = global::stats();
     log::info(format_args!(
-        "heap geral: {} bytes vivos (pico {}, orçamento {}), {} alocações, {} liberações, \
-         {} pontos de chamada relatados",
-        h.live_bytes, h.peak_bytes, h.budget, h.allocations, h.frees, h.reported_sites
+        "heap geral: {} bytes vivos, {} alocações",
+        h.live_bytes, h.allocations
     ));
 }
 
