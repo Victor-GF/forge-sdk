@@ -100,9 +100,17 @@ fn stack_capture_resolves_to_this_test_binary() {
     assert!(n > 0);
     let mut buf = [0u8; 256];
     let mut t = TextBuf::new(&mut buf);
-    stack::write_module_offset(&mut t, frames[0]);
+    assert!(stack::write_module_offset(&mut t, frames[0]));
     assert!(t.as_str().starts_with("contract"), "{}", t.as_str());
     assert!(t.as_str().contains("+0x"), "{}", t.as_str());
+}
+
+#[test]
+fn address_outside_any_module_writes_nothing() {
+    let mut buf = [0u8; 256];
+    let mut t = TextBuf::new(&mut buf);
+    assert!(!stack::write_module_offset(&mut t, 0));
+    assert_eq!(t.as_str(), "");
 }
 
 #[test]

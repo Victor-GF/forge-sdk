@@ -213,9 +213,10 @@ pub mod stack {
 
     /// Escreve `módulo+0xdeslocamento` (`racing.exe+0x1a2b` no Windows, `racing+0x1a2b` no
     /// Linux): o deslocamento é relativo ao início do módulo e pode ser simbolizado com
-    /// `tools/symbolize.sh`. Endereço fora de módulo sai cru (`0x...`). Não aloca.
-    pub fn write_module_offset(out: &mut TextBuf, address: usize) {
-        sys::write_module_offset(out, address);
+    /// `tools/symbolize.sh`. Endereço fora de módulo: não escreve nada e devolve `false` (quem
+    /// chama decide se mostra o endereço cru). Não aloca.
+    pub fn write_module_offset(out: &mut TextBuf, address: usize) -> bool {
+        sys::write_module_offset(out, address)
     }
 }
 

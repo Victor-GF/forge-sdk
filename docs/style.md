@@ -18,7 +18,7 @@ ele faz deve estar à vista.
 ## Idioma e nomes
 
 - **Identificadores em inglês**, com a terminologia padrão da indústria e do Rust (arena,
-  frame, breadcrumbs, crash report). Nada de apelidos locais.
+  frame, crash report). Nada de apelidos locais.
 - **Comentários, docs e mensagens de log em português.**
 - Tipos em `PascalCase`, funções e métodos em `snake_case`, constantes em `UPPER_CASE`.
 - Pastas: `engine/`, `games/`, `examples/`, `tests/`, `tools/`, `docs/`. Dentro de `engine/`,
@@ -126,17 +126,23 @@ próprio app desenha a barra de título (`libdecor`), o que custa bem mais que o
   numa página (4 KB) com tamanho múltiplo de página; os bytes do arredondamento ficam com a
   própria arena. Dentro da arena não há alinhamento a página: os dados ficam colados.
 - **Orçamento visível**: ao passar de 90%, a arena avisa no log (uma vez). Falta de espaço
-  devolve `None`; quando for fatal, `arena.oom_fatal()` grava o crash report com o pedido que
-  falhou e o uso de todas as arenas.
+  devolve `None`; quando for fatal, `arena.oom_fatal()` grava o crash report e escreve no
+  stderr o pedido que falhou e o uso da arena.
 - **Stack**: 1 MB na thread principal do Windows. Buffers grandes vão para arena.
 
 ## Diagnóstico
 
-- `forja_diag::log`: `log::info/warn/error(format_args!(...))`, sem alocar; as últimas linhas
-  ficam num ring buffer (breadcrumbs) que vai para o crash report.
+- `forja_diag::log`: `log::info/warn/error(format_args!(...))` em stderr, sem alocar.
 - `crash::install` no início do `main`: panic, exceções do SO (access violation, stack
-  overflow...) e erros fatais da engine geram `crash/crash_AAAA-MM-DD_HHMMSS.txt` com motivo,
-  pilha, memória do sistema, memória da forja, seções registradas e breadcrumbs.
+  overflow...) e erros fatais da engine geram `crash/crash_AAAA-MM-DD_HHMMSS.txt`.
+- **O crash report é o mesmo em desenvolvimento e em produção, e só tem campos fixos**: jogo e
+  versão, SO, data, tempo rodando, frame, motivo, código do SO, tipo de acesso (endereço nulo
+  ou inválido), pilha em módulo+deslocamento e memória do sistema. Como no Shipping da Unreal,
+  nada de texto montado em tempo de execução (mensagem de panic, detalhes do erro, log) nem
+  endereço absoluto: o arquivo pode sair da máquina do jogador sem levar dados dele. O texto
+  livre vai só para o stderr (`[crash] motivo: detalhes`).
+- Para ler a pilha de um crash de produção, guarde o binário de cada versão publicada com
+  símbolos (o papel dos PDBs na Unreal); o jogador recebe o binário sem símbolos.
 - Todo caminho que aborta de propósito chama `crash::fatal` antes (o `abort` do Windows pula
   os handlers de exceção).
 - Perfis com `panic = "abort"`: o hook grava o relatório e encerra; não há unwind.

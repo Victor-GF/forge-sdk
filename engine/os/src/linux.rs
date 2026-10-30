@@ -225,7 +225,7 @@ pub(crate) fn stack_capture(skip: u32, frames: &mut [usize]) -> usize {
     t.count
 }
 
-pub(crate) fn write_module_offset(t: &mut TextBuf, address: usize) {
+pub(crate) fn write_module_offset(t: &mut TextBuf, address: usize) -> bool {
     // SAFETY: `Dl_info` só tem ponteiros (zero é válido); `dladdr` só escreve nele.
     let (ok, info) = unsafe {
         let mut info: libc::Dl_info = core::mem::zeroed();
@@ -233,8 +233,7 @@ pub(crate) fn write_module_offset(t: &mut TextBuf, address: usize) {
         (ok, info)
     };
     if ok == 0 || info.dli_fname.is_null() {
-        let _ = write!(t, "0x{address:x}");
-        return;
+        return false;
     }
     // SAFETY: `dli_fname` é uma string C do carregador, válida enquanto o módulo estiver carregado.
     let path = unsafe { CStr::from_ptr(info.dli_fname) }.to_bytes();
@@ -243,6 +242,7 @@ pub(crate) fn write_module_offset(t: &mut TextBuf, address: usize) {
         let _ = t.write_str(chunk.valid());
     }
     let _ = write!(t, "+0x{:x}", address.wrapping_sub(info.dli_fbase as usize));
+    true
 }
 
 // ---------------------------------------------------------------- erro fatal

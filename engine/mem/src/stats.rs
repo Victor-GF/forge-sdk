@@ -1,18 +1,13 @@
 //! Estatísticas de memória: o estado de todas as arenas, legível de qualquer thread.
 //!
 //! Cada arena tem um slot com um único escritor (a thread dona); os campos são atômicos
-//! para que o crash report (e, no futuro, o inspetor) leia de outra thread sem corrida.
+//! para que outra thread (o inspetor, no futuro) leia sem corrida.
 //! No x86_64, load/store `Relaxed` são `mov` comuns: o custo por alocação é o mesmo de antes.
 //!
 //! Slots nunca são liberados (arenas vivem até o fim do programa).
 
 use core::cell::UnsafeCell;
-use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-
-use forja_core::text::TextBuf;
-
-use crate::global;
 
 pub const ARENAS_MAX: usize = 64;
 
@@ -110,60 +105,3 @@ pub fn arena_snapshot(i: usize) -> Option<ArenaSnapshot> {
     })
 }
 
-fn percent(part: usize, total: usize) -> f64 {
-    if total == 0 {
-        return 0.0;
-    }
-    part as f64 * 100.0 / total as f64
-}
-
-/// Seção "memória da forja" do crash report.
-pub(crate) fn crash_section(t: &mut TextBuf) {
-    let capacity = REGION_CAPACITY.load(Ordering::Relaxed);
-    let used = REGION_USED.load(Ordering::Relaxed);
-    let _ = writeln!(
-        t,
-        "região:  {used} de {capacity} bytes recortados ({:.0}%), página {} bytes",
-        percent(used, capacity),
-        REGION_PAGE_SIZE.load(Ordering::Relaxed)
-    );
-    for i in 0..arena_count() {
-        let Some(a) = arena_snapshot(i) else {
-            continue;
-        };
-        let _ = write!(
-            t,
-            "arena {:<12} usado {:>10} pico {:>10} de {:>10} bytes ({:>3.0}%), {} aloc., {} falhas",
-            a.name,
-            a.used,
-            a.peak,
-            a.capacity,
-            percent(a.peak, a.capacity),
-            a.allocations,
-            a.failures
-        );
-        if a.failures > 0 {
-            let _ = write!(t, " (último pedido que falhou: {} bytes)", a.last_failed_size);
-        }
-        let _ = t.write_char('\n');
-    }
-    let h = global::stats();
-    let _ = writeln!(
-        t,
-        "heap geral: {} bytes vivos (pico {}, orçamento {}), {} alocações, {} liberações, \
-         política {:?}, {} pontos de chamada relatados",
-        h.live_bytes, h.peak_bytes, h.budget, h.allocations, h.frees, h.policy, h.reported_sites
-    );
-    for tag in global::AllocTag::ALL {
-        let s = global::tag_stats(tag);
-        if s.allocations > 0 {
-            let _ = writeln!(
-                t,
-                "  tag {:<12} {:>10} bytes vivos, {} alocações",
-                tag.name(),
-                s.live_bytes,
-                s.allocations
-            );
-        }
-    }
-}

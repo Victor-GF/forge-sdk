@@ -9,15 +9,14 @@
 //! A região nunca é devolvida ao SO (vive até o processo acabar); por isso as arenas
 //! recortadas dela podem ser movidas livremente sem risco de apontar para memória liberada.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 
-use forja_diag::crash;
 use forja_os::memory;
 
 pub use forja_os::memory::{PageInfo, page_info};
 
 use crate::arena::{Arena, bump_reserve};
-use crate::stats::{REGION_CAPACITY, REGION_PAGE_SIZE, REGION_USED, crash_section};
+use crate::stats::{REGION_CAPACITY, REGION_PAGE_SIZE, REGION_USED};
 
 /// Dona da região. Fica na thread principal; o que sai dela (arenas, `ThreadMemory`) pode ir
 /// para outras threads.
@@ -47,8 +46,6 @@ pub struct ThreadMemory {
     pub frame: Arena,
 }
 
-static CRASH_SECTION_REGISTERED: AtomicBool = AtomicBool::new(false);
-
 /// Arredonda `v` para cima até múltiplo de `m` (potência de 2).
 pub fn round_up_pow2(v: usize, m: usize) -> Option<usize> {
     if !m.is_power_of_two() {
@@ -68,9 +65,6 @@ impl MemoryRegion {
         let base = memory::reserve(capacity)?;
         REGION_CAPACITY.store(capacity, Ordering::Relaxed);
         REGION_PAGE_SIZE.store(pages.page_size, Ordering::Relaxed);
-        if !CRASH_SECTION_REGISTERED.swap(true, Ordering::AcqRel) {
-            crash::register_section("memória da forja", crash_section);
-        }
         Some(MemoryRegion { base, capacity, used: 0, page_size: pages.page_size })
     }
 

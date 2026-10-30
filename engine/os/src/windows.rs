@@ -189,7 +189,7 @@ pub(crate) fn stack_capture(skip: u32, frames: &mut [usize]) -> usize {
     count
 }
 
-pub(crate) fn write_module_offset(t: &mut TextBuf, address: usize) {
+pub(crate) fn write_module_offset(t: &mut TextBuf, address: usize) -> bool {
     let mut module: HMODULE = null_mut();
     // SAFETY: com FROM_ADDRESS o "nome" é um endereço qualquer; `module` é local.
     let ok = unsafe {
@@ -200,8 +200,7 @@ pub(crate) fn write_module_offset(t: &mut TextBuf, address: usize) {
         )
     };
     if ok == 0 || module.is_null() {
-        let _ = write!(t, "0x{address:x}");
-        return;
+        return false;
     }
     let mut name = [0u16; 260];
     // SAFETY: `name` tem 260 posições.
@@ -213,6 +212,7 @@ pub(crate) fn write_module_offset(t: &mut TextBuf, address: usize) {
         let _ = t.write_char(c.unwrap_or('?'));
     }
     let _ = write!(t, "+0x{:x}", address.wrapping_sub(module as usize));
+    true
 }
 
 // ---------------------------------------------------------------- erro fatal

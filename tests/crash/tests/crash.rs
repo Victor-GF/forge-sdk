@@ -29,6 +29,8 @@ fn run(mode: &str) -> Outcome {
     Outcome { code: output.status.code(), stderr, report }
 }
 
+/// Campos fixos presentes; nada de texto livre (detalhe, log, arquivo do código) nem endereço
+/// absoluto no arquivo.
 fn check_common(o: &Outcome, reason: &str) {
     assert_ne!(o.code, Some(0), "o processo deveria ter falhado");
     assert!(o.report.starts_with("=== Forja: relatório de crash ==="), "{}", o.report);
@@ -38,8 +40,12 @@ fn check_common(o: &Outcome, reason: &str) {
     assert!(o.report.contains(&format!("sistema: {}\n", std::env::consts::OS)), "{}", o.report);
     assert!(o.report.contains(MODULE), "pilha sem o módulo:\n{}", o.report);
     assert!(o.report.contains("--- memória do sistema ---"), "{}", o.report);
-    assert!(o.report.contains("--- memória da forja ---"), "{}", o.report);
-    assert!(o.report.contains("crash_tests: modo"), "breadcrumbs sem o log:\n{}", o.report);
+    for forbidden in ["detalhe", "crash_tests: modo", ".rs:"] {
+        assert!(!o.report.contains(forbidden), "'{forbidden}' no relatório:\n{}", o.report);
+    }
+    let absolute = o.report.split_whitespace().find(|w| w.starts_with("0x") && w.len() == 18);
+    assert_eq!(absolute, None, "endereço absoluto no relatório:\n{}", o.report);
+    assert!(o.stderr.contains(&format!("[crash] {reason}")), "{}", o.stderr);
     assert!(o.stderr.contains("[crash] relatório em"), "{}", o.stderr);
 }
 
@@ -47,24 +53,24 @@ fn check_common(o: &Outcome, reason: &str) {
 fn arena_oom() {
     let o = run("oom");
     check_common(&o, "OOM de arena");
-    assert!(o.report.contains("arena 'frame' sem espaço: pedido de 1000 bytes"), "{}", o.report);
-    assert!(o.report.contains("(último pedido que falhou: 1000 bytes)"), "{}", o.report);
-    assert!(o.report.contains("passou de 90% do orçamento"), "{}", o.report);
+    assert!(o.stderr.contains("arena 'frame' sem espaço: pedido de 1000 bytes"), "{}", o.stderr);
+    assert!(o.stderr.contains("passou de 90% do orçamento"), "{}", o.stderr);
+    assert!(!o.report.contains("arena 'frame'"), "{}", o.report);
 }
 
 #[test]
 fn allocation_with_forbidden_heap() {
     let o = run("forbid");
     check_common(&o, "alocação com o heap geral proibido");
-    assert!(o.report.contains("pedido de 100 bytes"), "{}", o.report);
-    assert!(o.report.contains("política Forbid"), "{}", o.report);
+    assert!(o.stderr.contains("pedido de 100 bytes"), "{}", o.stderr);
+    assert!(o.stderr.contains("HeapPolicy::Forbid"), "{}", o.stderr);
 }
 
 #[test]
 fn heap_out_of_memory() {
     let o = run("heap_oom");
     check_common(&o, "heap geral sem memória");
-    assert!(o.report.contains("o sistema recusou 70368744177664 bytes"), "{}", o.report);
+    assert!(o.stderr.contains("o sistema recusou 70368744177664 bytes"), "{}", o.stderr);
 }
 
 #[test]
@@ -84,19 +90,21 @@ fn heap_reports_each_call_site_once_without_crashing() {
 }
 
 #[test]
-fn panic_with_message_and_location() {
+fn panic_message_goes_only_to_stderr() {
     let o = run("panic");
     check_common(&o, "panic");
-    assert!(o.report.contains("teste de panic: índice 7"), "{}", o.report);
-    assert!(o.report.contains("main.rs:"), "{}", o.report);
+    assert!(o.stderr.contains("teste de panic: índice 7"), "{}", o.stderr);
+    assert!(o.stderr.contains("main.rs:"), "{}", o.stderr);
+    assert!(!o.report.contains("teste de panic"), "{}", o.report);
 }
 
 #[test]
 fn access_violation() {
     let o = run("access");
     check_common(&o, "access violation");
-    assert!(o.report.contains("tentou escrever o endereço 0x0000000000000000"), "{}", o.report);
-    assert!(o.report.contains("exceção 0x"), "{}", o.report);
+    assert!(o.report.contains("erro SO: 0x"), "{}", o.report);
+    assert!(o.report.contains("acesso:  escrever em endereço nulo"), "{}", o.report);
+    assert!(o.report.contains(&format!("exceção {MODULE}")), "{}", o.report);
 }
 
 #[test]

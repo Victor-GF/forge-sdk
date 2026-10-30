@@ -11,6 +11,13 @@
 //! `abort()` não passa pelo handler de erro fatal (no Windows usa *fast fail*); por isso todo
 //! caminho que aborta de propósito passa por `crash::fatal` antes.
 //!
+//! O arquivo só tem campos fixos, como o relatório de um build Shipping da Unreal: motivo,
+//! código do SO, tipo de acesso à memória, pilha em módulo+deslocamento e memória do sistema.
+//! Nada de texto montado em tempo de execução (mensagem de panic, detalhes, log) nem endereço
+//! absoluto: o arquivo pode sair da máquina do jogador sem levar dados dele. O texto livre vai
+//! só para o stderr. A pilha é simbolizada fora (`tools/symbolize.sh`), com o binário do mesmo
+//! build guardado por quem publicou (o papel dos PDBs na Unreal).
+//!
 //! O relatório é montado num buffer estático (`REPORT_CAPACITY`) e gravado pelo `forja_os`:
 //! nada é alocado, então funciona sem memória livre e com o heap geral proibido.
 //! Pouca stack é usada, porque no stack overflow o handler roda numa reserva pequena.
@@ -24,7 +31,6 @@ use forja_os::fatal::{self, FatalEvent, FatalKind, MemoryAccess};
 use forja_os::file::{self, FileWriter};
 use forja_os::{process, stack, time};
 
-use crate::log::write_breadcrumbs;
 use crate::spin_lock::SpinLock;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,42 +43,22 @@ pub struct CrashConfig {
 
 const DEFAULT_CONFIG: CrashConfig = CrashConfig { app: "?", version: "?", dir: "crash" };
 
-/// Seção extra do relatório: o jogo e a engine registram funções que escrevem o próprio
-/// estado. Rodam durante o crash: não podem alocar nem entrar em pânico.
-#[derive(Clone, Copy)]
-pub struct Section {
-    pub name: &'static str,
-    pub write: fn(&mut TextBuf),
-}
-
-pub const SECTIONS_MAX: usize = 16;
-pub const REPORT_CAPACITY: usize = 64 * 1024;
+pub const REPORT_CAPACITY: usize = 16 * 1024;
 /// Código de saída quando um crash acontece dentro do próprio relatório.
 const NESTED_CRASH_EXIT_CODE: u32 = 0xDEAD;
-
-#[derive(Clone, Copy)]
-struct State {
-    config: CrashConfig,
-    sections: [Option<Section>; SECTIONS_MAX],
-    section_count: usize,
-}
+/// Acesso abaixo disso é ponteiro nulo (mais um campo): o SO nunca mapeia esses endereços
+/// (64 KB no Windows e no `vm.mmap_min_addr` padrão do Linux).
+const NULL_PAGE_LIMIT: usize = 64 * 1024;
 
 struct Shared {
     lock: SpinLock,
-    state: UnsafeCell<State>,
+    config: UnsafeCell<CrashConfig>,
 }
 
-// SAFETY: `state` só é escrito com `lock` pego; no crash é lido mesmo sem ele (melhor esforço).
+// SAFETY: `config` só é escrito com `lock` pego; no crash é lido mesmo sem ele (melhor esforço).
 unsafe impl Sync for Shared {}
 
-static SHARED: Shared = Shared {
-    lock: SpinLock::new(),
-    state: UnsafeCell::new(State {
-        config: DEFAULT_CONFIG,
-        sections: [None; SECTIONS_MAX],
-        section_count: 0,
-    }),
-};
+static SHARED: Shared = Shared { lock: SpinLock::new(), config: UnsafeCell::new(DEFAULT_CONFIG) };
 
 struct ReportBuf(UnsafeCell<[u8; REPORT_CAPACITY]>);
 
@@ -92,7 +78,7 @@ static CRASH_THREAD: AtomicU64 = AtomicU64::new(0);
 pub fn install(config: CrashConfig) {
     if SHARED.lock.try_lock(u32::MAX) {
         // SAFETY: lock pego.
-        unsafe { (*SHARED.state.get()).config = config };
+        unsafe { *SHARED.config.get() = config };
         SHARED.lock.unlock();
     }
     START_TICKS.store(time::ticks(), Ordering::Relaxed);
@@ -101,34 +87,26 @@ pub fn install(config: CrashConfig) {
     std::panic::set_hook(Box::new(panic_hook));
 }
 
-/// Registra uma seção extra no relatório. `false` se já houver `SECTIONS_MAX`.
-pub fn register_section(name: &'static str, write: fn(&mut TextBuf)) -> bool {
-    if !SHARED.lock.try_lock(u32::MAX) {
-        return false;
-    }
-    // SAFETY: lock pego.
-    let s = unsafe { &mut *SHARED.state.get() };
-    let ok = match s.sections.get_mut(s.section_count) {
-        Some(slot) => {
-            *slot = Some(Section { name, write });
-            s.section_count = s.section_count.saturating_add(1);
-            true
-        }
-        None => false,
-    };
-    SHARED.lock.unlock();
-    ok
-}
-
 /// Frame atual, para o relatório. Barato: um store atômico.
 pub fn set_frame(index: u64) {
     FRAME.store(index, Ordering::Relaxed);
 }
 
-/// Erro fatal: grava o relatório e aborta.
-pub fn fatal(reason: &str, details: fmt::Arguments) -> ! {
-    write_report(reason, details, None);
+/// Erro fatal: grava o relatório e aborta. `reason` é um literal e vai no arquivo; `details`
+/// é texto livre e vai só para o stderr.
+pub fn fatal(reason: &'static str, details: fmt::Arguments) -> ! {
+    write_report(&Crash { reason, details: Some(details), os: None });
     std::process::abort()
+}
+
+/// O que aconteceu, separado pelo que pode ir no arquivo.
+struct Crash<'a> {
+    /// Texto fixo do código: vai no arquivo.
+    reason: &'static str,
+    /// Texto livre (mensagem do panic, valores do erro): só no stderr.
+    details: Option<fmt::Arguments<'a>>,
+    /// Erro vindo do SO: código, instrução e acesso à memória.
+    os: Option<&'a FatalEvent>,
 }
 
 // ---------------------------------------------------------------- entradas do SO e da std
@@ -136,12 +114,12 @@ pub fn fatal(reason: &str, details: fmt::Arguments) -> ! {
 fn panic_hook(info: &std::panic::PanicHookInfo) {
     let msg = info.payload_as_str().unwrap_or("(mensagem não textual)");
     match info.location() {
-        Some(l) => write_report(
-            "panic",
-            format_args!("{msg}\n         em {}:{}:{}", l.file(), l.line(), l.column()),
-            None,
-        ),
-        None => write_report("panic", format_args!("{msg}"), None),
+        Some(l) => write_report(&Crash {
+            reason: "panic",
+            details: Some(format_args!("{msg} (em {}:{}:{})", l.file(), l.line(), l.column())),
+            os: None,
+        }),
+        None => write_report(&Crash { reason: "panic", details: Some(format_args!("{msg}")), os: None }),
     }
     std::process::abort()
 }
@@ -169,19 +147,7 @@ fn access_verb(access: MemoryAccess) -> &'static str {
 }
 
 fn on_fatal(e: &FatalEvent) {
-    let reason = fatal_reason(e.kind);
-    match e.kind {
-        FatalKind::AccessViolation { address, access } => write_report(
-            reason,
-            format_args!(
-                "código do SO 0x{:08X}: tentou {} o endereço 0x{address:016x}",
-                e.os_code,
-                access_verb(access)
-            ),
-            Some(e.instruction_address),
-        ),
-        _ => write_report(reason, format_args!("código do SO 0x{:08X}", e.os_code), Some(e.instruction_address)),
-    }
+    write_report(&Crash { reason: fatal_reason(e.kind), details: None, os: Some(e) });
 }
 
 // ---------------------------------------------------------------- relatório
@@ -199,21 +165,21 @@ fn enter_crash() -> bool {
     }
 }
 
-fn read_state() -> State {
+fn read_config() -> CrashConfig {
     let locked = SHARED.lock.try_lock(1000);
     // SAFETY: com o lock, ou no crash (melhor esforço).
-    let s = unsafe { *SHARED.state.get() };
+    let c = unsafe { *SHARED.config.get() };
     if locked {
         SHARED.lock.unlock();
     }
-    s
+    c
 }
 
-fn write_report(reason: &str, details: fmt::Arguments, instruction_address: Option<usize>) {
+fn write_report(crash: &Crash) {
     if !enter_crash() {
         return;
     }
-    let state = read_state();
+    let config = read_config();
     // SAFETY: só esta thread chega aqui (`enter_crash`).
     let buf: &mut [u8] = unsafe { &mut *REPORT.0.get() };
     let mut t = TextBuf::new(buf);
@@ -223,7 +189,7 @@ fn write_report(reason: &str, details: fmt::Arguments, instruction_address: Opti
     let uptime_s = time::ticks_to_seconds(elapsed, time::ticks_per_second());
 
     let _ = writeln!(t, "=== Forja: relatório de crash ===");
-    let _ = writeln!(t, "jogo:    {} {}", state.config.app, state.config.version);
+    let _ = writeln!(t, "jogo:    {} {}", config.app, config.version);
     let _ = writeln!(t, "sistema: {}", forja_os::CURRENT.name());
     let _ = writeln!(
         t,
@@ -232,18 +198,16 @@ fn write_report(reason: &str, details: fmt::Arguments, instruction_address: Opti
     );
     let _ = writeln!(t, "rodando: {uptime_s:.3} s");
     let _ = writeln!(t, "frame:   {}", FRAME.load(Ordering::Relaxed));
-    let _ = writeln!(t, "thread:  {}", process::thread_id());
-    let _ = writeln!(t, "motivo:  {reason}");
-    let _ = writeln!(t, "detalhe: {details}");
-
-    write_stack(&mut t, instruction_address);
-    write_system_memory(&mut t);
-    for s in state.sections.iter().flatten() {
-        let _ = writeln!(t, "\n--- {} ---", s.name);
-        (s.write)(&mut t);
+    let _ = writeln!(t, "motivo:  {}", crash.reason);
+    if let Some(e) = crash.os {
+        let _ = writeln!(t, "erro SO: 0x{:08X}", e.os_code);
+        if let FatalKind::AccessViolation { address, access } = e.kind {
+            let target = if address < NULL_PAGE_LIMIT { "endereço nulo" } else { "endereço inválido" };
+            let _ = writeln!(t, "acesso:  {} em {target}", access_verb(access));
+        }
     }
-    let _ = writeln!(t, "\n--- breadcrumbs (últimas linhas de log) ---");
-    write_breadcrumbs(&mut t);
+    write_stack(&mut t, crash.os.map(|e| e.instruction_address));
+    write_system_memory(&mut t);
     if t.truncated() {
         let _ = t.write_str("\n[relatório cortado: buffer cheio]\n");
     }
@@ -253,9 +217,9 @@ fn write_report(reason: &str, details: fmt::Arguments, instruction_address: Opti
     let _ = write!(
         path,
         "{}/crash_{:04}-{:02}-{:02}_{:02}{:02}{:02}.txt",
-        state.config.dir, now.year, now.month, now.day, now.hour, now.minute, now.second
+        config.dir, now.year, now.month, now.day, now.hour, now.minute, now.second
     );
-    let _ = file::create_dir(state.config.dir);
+    let _ = file::create_dir(config.dir);
     let written = match FileWriter::create(path.as_str()) {
         Some(f) => {
             let ok = f.write_all(t.as_bytes());
@@ -267,7 +231,14 @@ fn write_report(reason: &str, details: fmt::Arguments, instruction_address: Opti
 
     let mut notice_buf = [0u8; 1024];
     let mut notice = TextBuf::new(&mut notice_buf);
-    let _ = writeln!(notice, "[crash] {reason}: {details}");
+    match crash.details {
+        Some(details) => {
+            let _ = writeln!(notice, "[crash] {}: {details}", crash.reason);
+        }
+        None => {
+            let _ = writeln!(notice, "[crash] {}", crash.reason);
+        }
+    }
     if written {
         let _ = writeln!(notice, "[crash] relatório em {}", path.as_str());
     } else {
@@ -276,20 +247,27 @@ fn write_report(reason: &str, details: fmt::Arguments, instruction_address: Opti
     let _ = std::io::Write::write_all(&mut std::io::stderr(), notice.as_bytes());
 }
 
+/// Só módulo+deslocamento: o endereço absoluto não diz nada fora do processo. Fora de módulo
+/// vira `?`.
 fn write_stack(t: &mut TextBuf, instruction_address: Option<usize>) {
     let _ = writeln!(t, "\n--- pilha (módulo+deslocamento; simbolize com tools/symbolize.sh) ---");
     if let Some(address) = instruction_address {
-        let _ = write!(t, "exceção 0x{address:016x} ");
-        stack::write_module_offset(t, address);
-        let _ = t.write_char('\n');
+        let _ = t.write_str("exceção ");
+        write_frame(t, address);
     }
     let mut frames = [0usize; stack::FRAMES_MAX];
     let n = stack::capture(1, &mut frames);
     for (i, f) in frames.iter().take(n).enumerate() {
-        let _ = write!(t, "#{i:02}     0x{f:016x} ");
-        stack::write_module_offset(t, *f);
-        let _ = t.write_char('\n');
+        let _ = write!(t, "#{i:02}     ");
+        write_frame(t, *f);
     }
+}
+
+fn write_frame(t: &mut TextBuf, address: usize) {
+    if !stack::write_module_offset(t, address) {
+        let _ = t.write_char('?');
+    }
+    let _ = t.write_char('\n');
 }
 
 fn mib(bytes: u64) -> f64 {

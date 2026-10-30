@@ -138,8 +138,8 @@ impl Arena {
         }
     }
 
-    /// Para quando a falta de espaço é fatal: grava o crash report (com o pedido que falhou e
-    /// o uso de todas as arenas) e aborta.
+    /// Para quando a falta de espaço é fatal: grava o crash report e aborta. O pedido que
+    /// falhou e o uso da arena vão para o stderr (texto livre não entra no relatório).
     ///
     /// `let Some(x) = arena.alloc_slice(n, 0) else { arena.oom_fatal() };`
     pub fn oom_fatal(&self) -> ! {

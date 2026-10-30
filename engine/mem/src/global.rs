@@ -412,7 +412,9 @@ fn report_site(size: usize) {
             if i > 0 {
                 let _ = t.write_str(" <- ");
             }
-            stack::write_module_offset(&mut t, *f);
+            if !stack::write_module_offset(&mut t, *f) {
+                let _ = write!(t, "0x{f:x}");
+            }
         }
         log::warn(format_args!(
             "heap geral: alocação de {size} bytes depois da inicialização (tag {}); pilha: {}",
