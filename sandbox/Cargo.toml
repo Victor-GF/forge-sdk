@@ -1,11 +1,11 @@
 [package]
-name = "forge_runtime"
+name = "forge_sandbox"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "forge"
+name = "sandbox"
 path = "src/main.rs"
 
 [dependencies]

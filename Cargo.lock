@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "forge_runtime"
+name = "forge_sandbox"
 version = "0.1.0"
 dependencies = [
  "forge_core",
