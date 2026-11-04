@@ -3,11 +3,17 @@ use super::winnt::LONG;
 use core::ffi::c_void;
 use forge_core::layout;
 
+pub type BYTE = u8;
 pub type BOOL = i32;
+pub type BOOLEAN = BYTE;
 pub type WORD = u16;
 pub type DWORD = u32;
 pub type UINT = u32;
 pub type INT = i32;
+pub type INT8 = i8;
+pub type INT16 = i16;
+pub type INT32 = i32;
+pub type INT64 = i64;
 pub type ATOM = WORD;
 pub type LPVOID = *mut c_void;
 pub type LPDWORD = *mut DWORD;

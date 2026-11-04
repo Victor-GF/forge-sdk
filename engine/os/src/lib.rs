@@ -7,6 +7,7 @@
 //! - [`memory`]: paginas de memoria virtual e heap do processo.
 //! - [`thread`]: criacao, espera e controle de threads.
 //! - [`sync`]: primitivas de sincronizacao que bloqueiam no SO.
+//! - [`time`]: relogio monotonico de alta resolucao.
 //! - [`window`]: janela nativa do sistema e seus eventos.
 //! - [`dialog`]: caixas de dialogo modais do sistema.
 //!
@@ -20,6 +21,28 @@
 //!
 //! As funcoes pertencem as traits de categoria, que precisam estar em escopo:
 //! `use forge_os::prelude::*;` traz todas junto com `Platform`.
+//!
+//! # Erros
+//!
+//! Cada tipo de problema tem um mecanismo, e um backend novo segue o mesmo:
+//!
+//! - Falha esperada do SO (sem memoria, janela que nao criou, handle
+//!   invalido): volta como valor (nulo, `Option`, `bool`). Nunca panic:
+//!   quem chama decide se e fatal.
+//! - Bug de quem chama ou invariante quebrada: `panic!`/`debug_assert!`. Com
+//!   `panic = "abort"` no workspace, panic e um `assert` de C: para o
+//!   processo na hora, sem unwinding.
+//! - Layout de struct que cruza FFI: `forge_core::layout!`, erro de
+//!   compilacao.
+//!
+//! Panic nao e problema de portabilidade: o mecanismo vive em `core`. O que
+//! muda por plataforma e so o que acontece depois, definido pelo
+//! `#[panic_handler]` do binario final (o do `std` quando ha `std`; escrito a
+//! mao num alvo sem `std`). As libs da engine nao definem esse handler.
+//!
+//! Callbacks chamados pelo SO (`window_proc`, trampolim de thread) podem
+//! entrar em panic: com abort o processo para ali, sem unwinding atravessar
+//! a fronteira FFI.
 
 #![no_std]
 
@@ -28,12 +51,19 @@ pub mod memory;
 pub mod process;
 pub mod sync;
 pub mod thread;
+pub mod time;
 pub mod window;
 
 /// Tudo o que a engine pode pedir ao SO. Um backend so e `Os` se implementar
 /// todas as categorias; faltando uma, nao compila.
 pub trait Os:
-    process::Process + memory::Memory + thread::Thread + sync::Synchronization + window::Window + dialog::Dialog
+    process::Process
+    + memory::Memory
+    + thread::Thread
+    + sync::Synchronization
+    + time::Time
+    + window::Window
+    + dialog::Dialog
 {
 }
 
@@ -44,6 +74,7 @@ pub mod prelude {
     pub use crate::process::Process;
     pub use crate::sync::{SemaphoreHandle, Synchronization};
     pub use crate::thread::{Thread, ThreadEntry, ThreadHandle};
+    pub use crate::time::Time;
     pub use crate::window::{Window, WindowHandle};
     pub use crate::{Os, Platform};
 }

@@ -13,6 +13,7 @@ mod memory;
 mod process;
 mod sync;
 mod thread;
+mod time;
 mod window;
 
 pub struct Win32;
