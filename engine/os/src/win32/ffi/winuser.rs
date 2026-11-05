@@ -1,6 +1,6 @@
 use super::basetsd::LONG_PTR;
 use super::minwindef::{ATOM, BOOL, DWORD, HINSTANCE, INT, LPARAM, LPVOID, LRESULT, UINT, ULONG, USHORT, WPARAM};
-use super::windef::{HBRUSH, HCURSOR, HICON, HMENU, HWND, POINT, RECT};
+use super::windef::{DPI_AWARENESS_CONTEXT, HBRUSH, HCURSOR, HICON, HMENU, HMONITOR, HWND, POINT, RECT};
 use super::winnt::{HANDLE, LONG, LPCSTR};
 use core::ffi::c_void;
 use forge_core::layout;
@@ -44,6 +44,42 @@ pub const CS_VREDRAW: UINT = 0x0001;
 pub const CS_HREDRAW: UINT = 0x0002;
 
 pub const WS_OVERLAPPEDWINDOW: DWORD = 0x00CF_0000;
+pub const WS_POPUP: DWORD = 0x8000_0000;
+
+pub const GWL_STYLE: INT = -16;
+
+pub const SWP_NOSIZE: UINT = 0x0001;
+pub const SWP_NOMOVE: UINT = 0x0002;
+pub const SWP_NOZORDER: UINT = 0x0004;
+pub const SWP_NOACTIVATE: UINT = 0x0010;
+pub const SWP_FRAMECHANGED: UINT = 0x0020;
+pub const SWP_NOOWNERZORDER: UINT = 0x0200;
+
+pub const MONITOR_DEFAULTTONEAREST: DWORD = 0x0000_0002;
+
+pub const USER_DEFAULT_SCREEN_DPI: UINT = 96;
+
+#[repr(C)]
+pub struct MONITORINFO {
+    pub cbSize: DWORD,
+    pub rcMonitor: RECT,
+    pub rcWork: RECT,
+    pub dwFlags: DWORD,
+}
+
+layout!(MONITORINFO, size = 40, align = 4);
+
+#[repr(C)]
+pub struct WINDOWPLACEMENT {
+    pub length: UINT,
+    pub flags: UINT,
+    pub showCmd: UINT,
+    pub ptMinPosition: POINT,
+    pub ptMaxPosition: POINT,
+    pub rcNormalPosition: RECT,
+}
+
+layout!(WINDOWPLACEMENT, size = 44, align = 4);
 
 pub const CW_USEDEFAULT: INT = 0x8000_0000_u32 as INT;
 
@@ -55,6 +91,7 @@ pub const WM_SETFOCUS: UINT = 0x0007;
 pub const WM_KILLFOCUS: UINT = 0x0008;
 pub const WM_CLOSE: UINT = 0x0010;
 pub const WM_INPUT: UINT = 0x00FF;
+pub const WM_DPICHANGED: UINT = 0x02E0;
 pub const WM_KEYDOWN: UINT = 0x0100;
 pub const WM_KEYUP: UINT = 0x0101;
 pub const WM_SYSKEYDOWN: UINT = 0x0104;
@@ -174,6 +211,20 @@ unsafe extern "system" {
 
     pub fn SetWindowLongPtrA(hWnd: HWND, nIndex: INT, dwNewLong: LONG_PTR) -> LONG_PTR;
     pub fn GetWindowLongPtrA(hWnd: HWND, nIndex: INT) -> LONG_PTR;
+
+    pub fn SetWindowPos(hWnd: HWND, hWndInsertAfter: HWND, X: INT, Y: INT, cx: INT, cy: INT, uFlags: UINT) -> BOOL;
+    pub fn GetWindowPlacement(hWnd: HWND, lpwndpl: *mut WINDOWPLACEMENT) -> BOOL;
+    pub fn SetWindowPlacement(hWnd: HWND, lpwndpl: *const WINDOWPLACEMENT) -> BOOL;
+
+    pub fn MonitorFromWindow(hwnd: HWND, dwFlags: DWORD) -> HMONITOR;
+    pub fn GetMonitorInfoA(hMonitor: HMONITOR, lpmi: *mut MONITORINFO) -> BOOL;
+
+    /// Windows 10 1703 em diante.
+    pub fn SetProcessDpiAwarenessContext(value: DPI_AWARENESS_CONTEXT) -> BOOL;
+    /// Windows 10 1607 em diante.
+    pub fn GetDpiForWindow(hwnd: HWND) -> UINT;
+    /// Windows 10 1607 em diante.
+    pub fn AdjustWindowRectExForDpi(lpRect: *mut RECT, dwStyle: DWORD, bMenu: BOOL, dwExStyle: DWORD, dpi: UINT) -> BOOL;
 
     pub fn SetCapture(hWnd: HWND) -> HWND;
     pub fn ReleaseCapture() -> BOOL;

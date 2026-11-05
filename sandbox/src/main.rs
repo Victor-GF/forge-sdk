@@ -7,7 +7,8 @@
 //! Testa memoria e arquivos uma vez na inicializacao, sobe um pool de
 //! threads, abre uma janela e roda o loop ate o usuario fechar. A cada frame
 //! o pool soma um array em pedacos, divididos entre os workers e a thread
-//! principal, e confere o resultado. O codigo do jogo (`sandbox/game`) roda
+//! principal, e confere o resultado. O ritmo e de `FRAME_RATE` frames por
+//! segundo, com espera precisa. O codigo do jogo (`sandbox/game`) roda
 //! numa DLL recarregada quando recompilada (`hot_reload`).
 
 mod file_check;
@@ -22,7 +23,8 @@ use hot_reload::GameCode;
 use parallel_sum::ParallelSum;
 use workers::Pool;
 
-const FRAME_MS: u32 = 16;
+/// Frames por segundo do loop, com espera precisa (`timer_wait_until`).
+const FRAME_RATE: u64 = 60;
 const SUM_VALUES: usize = 1 << 20;
 const JOBS_PER_WORKER: usize = 4;
 /// Memoria do jogo: do executavel, sobrevive ao hot reload.
@@ -67,6 +69,18 @@ fn main() {
         Platform::message_box(c"forge sandbox", c"Falha ao criar a janela.");
         Platform::exit_process(1);
     };
+    forge_log!(
+        "[window] escala {:.2}, {:?}",
+        Platform::window_dpi_scale(&window),
+        Platform::window_native(&window)
+    );
+    forge_log!("[window] F11 ou Alt+Enter alterna tela cheia");
+
+    let timer = Platform::timer_create().expect("timer_create falhou");
+    let frame_ticks = Platform::time_frequency() / FRAME_RATE;
+    let mut next_frame = Platform::time_ticks() + frame_ticks;
+    let mut last_frame = Platform::time_ticks();
+    let mut frame_time = Timing::new();
 
     let mut frames: u64 = 0;
     let mut size = (0, 0);
@@ -86,6 +100,14 @@ fn main() {
         Platform::window_input(&window, &mut input.keyboard, &mut input.mouse);
         Platform::gamepads_update(&mut input.gamepads);
 
+        let keyboard = &input.keyboard;
+        let alt = keyboard.key(Key::LeftAlt).down || keyboard.key(Key::RightAlt).down;
+        if keyboard.key(Key::F11).pressed() || (alt && keyboard.key(Key::Enter).pressed()) {
+            let fullscreen = !Platform::window_is_fullscreen(&window);
+            Platform::window_set_fullscreen(&window, fullscreen);
+            forge_log!("[window] tela cheia: {fullscreen}");
+        }
+
         game.poll();
         // `pages_alloc` entrega memoria zerada e alinhada a pagina, so do jogo.
         unsafe { game.update(game_memory, GAME_MEMORY, &input, frames) };
@@ -95,7 +117,18 @@ fn main() {
         sum_time.add(Platform::time_ticks() - start);
 
         frames += 1;
-        Platform::thread_sleep(FRAME_MS);
+
+        // Prazo absoluto: um frame que acordou atrasado nao empurra os
+        // seguintes. Mais de um frame de atraso (janela sendo arrastada,
+        // breakpoint) recomeca a contagem a partir de agora.
+        Platform::timer_wait_until(&timer, next_frame);
+        let now = Platform::time_ticks();
+        frame_time.add(now - last_frame);
+        last_frame = now;
+        next_frame += frame_ticks;
+        if now >= next_frame {
+            next_frame = now + frame_ticks;
+        }
     }
 
     Platform::window_destroy(window);
@@ -104,6 +137,8 @@ fn main() {
     let jobs = pool.stop();
     forge_log!("[sandbox] {frames} frames, {jobs} jobs");
     sum_time.print("sum.run");
+    frame_time.print("frame");
+    Platform::timer_destroy(timer);
 }
 
 /// Minimo, media e maximo de uma medida repetida, em ticks.

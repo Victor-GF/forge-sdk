@@ -7,8 +7,9 @@
 //! - [`memory`]: paginas de memoria virtual e heap do processo.
 //! - [`thread`]: criacao, espera e controle de threads.
 //! - [`sync`]: primitivas de sincronizacao que bloqueiam no SO.
-//! - [`time`]: relogio monotonico de alta resolucao.
-//! - [`window`]: janela nativa do sistema e seus eventos.
+//! - [`time`]: relogio monotonico de alta resolucao e espera precisa.
+//! - [`window`]: janela nativa do sistema, seus eventos e o que a API grafica
+//!   precisa dela.
 //! - [`dialog`]: caixas de dialogo modais do sistema.
 //! - [`diagnostics`]: saida de texto (console, debugger) e controle do
 //!   debugger.
@@ -100,8 +101,8 @@ pub mod prelude {
     pub use crate::process::Process;
     pub use crate::sync::{SemaphoreHandle, Synchronization};
     pub use crate::thread::{Thread, ThreadEntry, ThreadHandle};
-    pub use crate::time::Time;
-    pub use crate::window::{Window, WindowHandle};
+    pub use crate::time::{Time, TimerHandle};
+    pub use crate::window::{NativeWindow, Window, WindowHandle};
     pub use crate::{Os, Platform};
 }
 
