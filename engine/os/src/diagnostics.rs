@@ -7,8 +7,8 @@
 //!   Studio, RemedyBG, WinDbg). Funciona mesmo em app sem console. Sem
 //!   debugger, o texto e descartado.
 //!
-//! Para log formatado sem `std`, use [`log!`](crate::log!), que escreve nos
-//! dois.
+//! Para log formatado sem `std`, use [`forge_log!`](crate::forge_log!), que
+//! escreve nos dois.
 
 pub trait Diagnostics {
     /// Escreve `text` como esta, sem quebra de linha, na saida padrao.

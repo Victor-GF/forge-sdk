@@ -1,6 +1,6 @@
 use super::basetsd::ULONG_PTR;
-use super::minwindef::{BOOL, DWORD, LPVOID};
-use super::winnt::HANDLE;
+use super::minwindef::{BOOL, DWORD, FILETIME, LPVOID, MAX_PATH};
+use super::winnt::{HANDLE, WCHAR};
 use forge_core::layout;
 
 /// No SDK, `Offset`/`OffsetHigh` estao numa union com `Pointer: PVOID`; aqui
@@ -28,5 +28,23 @@ pub struct SECURITY_ATTRIBUTES {
 layout!(SECURITY_ATTRIBUTES, size = 24, align = 8);
 
 pub type LPSECURITY_ATTRIBUTES = *mut SECURITY_ATTRIBUTES;
+
+#[repr(C)]
+pub struct WIN32_FIND_DATAW {
+    pub dwFileAttributes: DWORD,
+    pub ftCreationTime: FILETIME,
+    pub ftLastAccessTime: FILETIME,
+    pub ftLastWriteTime: FILETIME,
+    pub nFileSizeHigh: DWORD,
+    pub nFileSizeLow: DWORD,
+    pub dwReserved0: DWORD,
+    pub dwReserved1: DWORD,
+    pub cFileName: [WCHAR; MAX_PATH],
+    pub cAlternateFileName: [WCHAR; 14],
+}
+
+layout!(WIN32_FIND_DATAW, size = 592, align = 4);
+
+pub type LPWIN32_FIND_DATAW = *mut WIN32_FIND_DATAW;
 
 pub type LPTHREAD_START_ROUTINE = unsafe extern "system" fn(lpThreadParameter: LPVOID) -> DWORD;

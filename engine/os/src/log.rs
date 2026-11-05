@@ -1,4 +1,4 @@
-//! Log formatado sem `std` e sem alocacao: `forge_os::log!("x = {x}")`.
+//! Log formatado sem `std` e sem alocacao: `forge_os::forge_log!("x = {x}")`.
 //!
 //! Formata numa buffer na stack e escreve cada linha inteira, com `\n`, no
 //! console e no debugger ([`Diagnostics`]). Linhas de threads diferentes nao
@@ -11,7 +11,7 @@ use core::fmt::{self, Write};
 
 const CAPACITY: usize = 1024;
 
-/// Formata `format_args!` e escreve como uma linha. Use [`log!`](crate::log!).
+/// Formata `format_args!` e escreve como uma linha. Use [`forge_log!`](crate::forge_log!).
 #[doc(hidden)]
 pub fn write_line(args: fmt::Arguments) {
     let mut line = Line { buf: [0; CAPACITY], len: 0 };
@@ -22,7 +22,7 @@ pub fn write_line(args: fmt::Arguments) {
 
 /// Escreve uma linha formatada no console e no debugger, como `println!`.
 #[macro_export]
-macro_rules! log {
+macro_rules! forge_log {
     ($($arg:tt)*) => {
         $crate::log::write_line(::core::format_args!($($arg)*))
     };

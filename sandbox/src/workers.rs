@@ -192,7 +192,7 @@ impl Pool {
         let threads = (0..count)
             .map(|_| Platform::thread_create(worker, shared.cast()).expect("thread_create falhou"))
             .collect();
-        log!("[workers] {count} threads + quem chama run");
+        forge_log!("[workers] {count} threads + quem chama run");
         Pool {
             shared,
             threads,
@@ -254,7 +254,7 @@ impl Pool {
     pub fn stop(mut self) -> u64 {
         let workers = self.join_all();
         let caller = self.caller_executed.get();
-        log!("[workers] quem chama run: {caller} jobs");
+        forge_log!("[workers] quem chama run: {caller} jobs");
         let total = workers + caller;
         assert_eq!(
             total,
@@ -277,7 +277,7 @@ impl Pool {
         let mut total = 0;
         for (i, thread) in self.threads.drain(..).enumerate() {
             let jobs = Platform::thread_join(thread);
-            log!("[workers] worker {i}: {jobs} jobs");
+            forge_log!("[workers] worker {i}: {jobs} jobs");
             total += jobs as u64;
         }
         total

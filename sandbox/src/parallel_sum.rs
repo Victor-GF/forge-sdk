@@ -7,7 +7,7 @@
 use crate::workers::{Job, Pool};
 use core::ffi::c_void;
 use core::slice;
-use forge_os::log;
+use forge_os::forge_log;
 
 /// Dados de um job: a faixa a somar e onde guardar o resultado.
 struct Chunk {
@@ -37,7 +37,7 @@ impl ParallelSum {
         assert!(chunk_count > 0, "precisa de pelo menos um pedaco");
         let values: Vec<u32> = (0..len as u32).collect();
         let expected = values.iter().map(|&v| v as u64).sum();
-        log!("[sum] {len} valores em {chunk_count} jobs por frame");
+        forge_log!("[sum] {len} valores em {chunk_count} jobs por frame");
         ParallelSum {
             values,
             expected,

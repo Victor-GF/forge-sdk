@@ -5,13 +5,13 @@ use forge_os::prelude::*;
 
 pub fn run() {
     let page = Platform::page_info();
-    log!("[memory] page={} granularity={}", page.size, page.granularity);
+    forge_log!("[memory] page={} granularity={}", page.size, page.granularity);
 
     pages(page);
     heap();
     failures();
 
-    log!("[memory] ok");
+    forge_log!("[memory] ok");
 }
 
 fn pages(page: PageInfo) {
@@ -90,5 +90,5 @@ fn failures() {
         Platform::heap_free(block);
     }
 
-    log!("[memory] falhas viram nulo");
+    forge_log!("[memory] falhas viram nulo");
 }

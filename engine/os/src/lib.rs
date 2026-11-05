@@ -12,8 +12,10 @@
 //! - [`dialog`]: caixas de dialogo modais do sistema.
 //! - [`diagnostics`]: saida de texto (console, debugger) e controle do
 //!   debugger.
+//! - [`file`]: arquivos, diretorios e caminhos do jogo (executavel, dados
+//!   do usuario).
 //!
-//! Acima do contrato, [`log!`] formata texto sem `std` e escreve via
+//! Acima do contrato, [`forge_log!`] formata texto sem `std` e escreve via
 //! `diagnostics`.
 //!
 //! `Os` junta todas as categorias. Cada backend implementa todas num tipo
@@ -53,6 +55,7 @@
 
 pub mod diagnostics;
 pub mod dialog;
+pub mod file;
 pub mod log;
 pub mod memory;
 pub mod process;
@@ -72,14 +75,16 @@ pub trait Os:
     + window::Window
     + dialog::Dialog
     + diagnostics::Diagnostics
+    + file::FileSystem
 {
 }
 
-/// `Platform`, as traits de todas as categorias e `log!`.
+/// `Platform`, as traits de todas as categorias e `forge_log!`.
 pub mod prelude {
     pub use crate::diagnostics::Diagnostics;
     pub use crate::dialog::Dialog;
-    pub use crate::log;
+    pub use crate::file::{EntryKind, FileAccess, FileHandle, FileSystem, FileView};
+    pub use crate::forge_log;
     pub use crate::memory::{Memory, PageInfo};
     pub use crate::process::Process;
     pub use crate::sync::{SemaphoreHandle, Synchronization};

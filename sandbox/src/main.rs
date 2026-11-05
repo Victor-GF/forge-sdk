@@ -4,11 +4,12 @@
 //! funcionalidades em runtime. Fica fora de `engine/`: nada da engine pode
 //! depender daqui.
 //!
-//! Testa memoria uma vez na inicializacao, sobe um pool de threads, abre uma
-//! janela e roda o loop ate o usuario fechar. A cada frame o pool soma um
-//! array em pedacos, divididos entre os workers e a thread principal, e
-//! confere o resultado.
+//! Testa memoria e arquivos uma vez na inicializacao, sobe um pool de
+//! threads, abre uma janela e roda o loop ate o usuario fechar. A cada frame
+//! o pool soma um array em pedacos, divididos entre os workers e a thread
+//! principal, e confere o resultado.
 
+mod file_check;
 mod memory_check;
 mod parallel_sum;
 mod pool_bench;
@@ -27,17 +28,24 @@ fn main() {
     // console e para o debugger, e com debugger anexado o processo para na
     // linha do panic em vez de sumir.
     std::panic::set_hook(Box::new(|info| {
-        log!("[panic] {info}");
+        forge_log!("[panic] {info}");
         if Platform::debugger_present() {
             Platform::debug_break();
         }
     }));
 
     Platform::thread_set_name("forge main");
-    log!("[sandbox] thread principal {}", Platform::thread_current_id());
-    log!("[time] contador a {} ticks/s", Platform::time_frequency());
+    forge_log!("[sandbox] thread principal {}", Platform::thread_current_id());
+    forge_log!("[time] contador a {} ticks/s", Platform::time_frequency());
+    forge_log!("[sandbox] acentuação: çãé ü → ok");
+
+    // Testa o caminho de panic: log, `debug_break` com debugger, abort.
+    if std::env::args().any(|arg| arg == "--panic") {
+        panic!("panic de teste pedido por --panic (çã)");
+    }
 
     memory_check::run();
+    file_check::run();
 
     // A thread principal tambem executa jobs em `run`: um worker a menos.
     let pool = Pool::start(Platform::logical_processor_count().saturating_sub(1).max(1));
@@ -58,7 +66,7 @@ fn main() {
         let current = Platform::window_size(&window);
         if current != size {
             size = current;
-            log!("[window] {}x{}", size.0, size.1);
+            forge_log!("[window] {}x{}", size.0, size.1);
         }
 
         let start = Platform::time_ticks();
@@ -71,7 +79,7 @@ fn main() {
 
     Platform::window_destroy(window);
     let jobs = pool.stop();
-    log!("[sandbox] {frames} frames, {jobs} jobs");
+    forge_log!("[sandbox] {frames} frames, {jobs} jobs");
     sum_time.print("sum.run");
 }
 
@@ -100,7 +108,7 @@ impl Timing {
             return;
         }
         let us = |ticks: u64| Platform::time_ticks_to_nanos(ticks) as f64 / 1000.0;
-        log!(
+        forge_log!(
             "[time] {name}: media {:.1} us, min {:.1} us, max {:.1} us ({} medidas)",
             us(self.total / self.count),
             us(self.min),

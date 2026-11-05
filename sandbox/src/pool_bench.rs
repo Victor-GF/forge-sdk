@@ -28,7 +28,7 @@ pub fn run(pool: &Pool) {
     let nanos = Platform::time_ticks_to_nanos(Platform::time_ticks() - start);
 
     let total = JOBS as u64 * ROUNDS as u64;
-    log!(
+    forge_log!(
         "[bench] {ROUNDS} lotes de {JOBS} jobs vazios: {:.1} ns/job, {:.1} us/lote",
         nanos as f64 / total as f64,
         nanos as f64 / ROUNDS as f64 / 1000.0,

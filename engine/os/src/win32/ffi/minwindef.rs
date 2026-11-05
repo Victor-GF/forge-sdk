@@ -20,6 +20,16 @@ pub type LPCVOID = *const c_void;
 pub type LPDWORD = *mut DWORD;
 pub type LPLONG = *mut LONG;
 
+pub const MAX_PATH: usize = 260;
+
+#[repr(C)]
+pub struct FILETIME {
+    pub dwLowDateTime: DWORD,
+    pub dwHighDateTime: DWORD,
+}
+
+layout!(FILETIME, size = 8, align = 4);
+
 pub type WPARAM = UINT_PTR;
 pub type LPARAM = LONG_PTR;
 pub type LRESULT = LONG_PTR;
