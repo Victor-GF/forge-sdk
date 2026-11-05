@@ -1,7 +1,7 @@
 use super::basetsd::SIZE_T;
 use super::minwinbase::{LPSECURITY_ATTRIBUTES, LPTHREAD_START_ROUTINE};
 use super::minwindef::{BOOL, DWORD, LPDWORD, LPVOID, UINT};
-use super::winnt::HANDLE;
+use super::winnt::{HANDLE, HRESULT, LPCWSTR};
 
 #[link(name = "kernel32", kind = "raw-dylib")]
 unsafe extern "system" {
@@ -17,5 +17,8 @@ unsafe extern "system" {
     ) -> HANDLE;
     pub fn GetExitCodeThread(hThread: HANDLE, lpExitCode: LPDWORD) -> BOOL;
     pub fn GetCurrentThreadId() -> DWORD;
+    pub fn GetCurrentThread() -> HANDLE;
+    /// Windows 10 1607 ou mais novo.
+    pub fn SetThreadDescription(hThread: HANDLE, lpThreadDescription: LPCWSTR) -> HRESULT;
     pub fn SwitchToThread() -> BOOL;
 }

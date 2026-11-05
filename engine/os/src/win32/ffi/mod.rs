@@ -14,12 +14,16 @@
 #![allow(non_snake_case, non_camel_case_types, dead_code, unused_imports)]
 
 mod basetsd;
+mod consoleapi;
+mod debugapi;
+mod fileapi;
 mod handleapi;
 mod heapapi;
 mod libloaderapi;
 mod memoryapi;
 mod minwinbase;
 mod minwindef;
+mod processenv;
 mod processthreadsapi;
 mod profileapi;
 mod synchapi;
@@ -30,12 +34,16 @@ mod winnt;
 mod winuser;
 
 pub use basetsd::*;
+pub use consoleapi::*;
+pub use debugapi::*;
+pub use fileapi::*;
 pub use handleapi::*;
 pub use heapapi::*;
 pub use libloaderapi::*;
 pub use memoryapi::*;
 pub use minwinbase::*;
 pub use minwindef::*;
+pub use processenv::*;
 pub use processthreadsapi::*;
 pub use profileapi::*;
 pub use synchapi::*;

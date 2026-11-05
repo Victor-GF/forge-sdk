@@ -11,6 +11,7 @@
 
 mod memory_check;
 mod parallel_sum;
+mod pool_bench;
 mod workers;
 
 use forge_os::prelude::*;
@@ -22,13 +23,25 @@ const SUM_VALUES: usize = 1 << 20;
 const JOBS_PER_WORKER: usize = 4;
 
 fn main() {
-    println!("[sandbox] thread principal {}", Platform::thread_current_id());
-    println!("[time] contador a {} ticks/s", Platform::time_frequency());
+    // Panic vira abort (`panic = "abort"`); antes disso, a mensagem vai para o
+    // console e para o debugger, e com debugger anexado o processo para na
+    // linha do panic em vez de sumir.
+    std::panic::set_hook(Box::new(|info| {
+        log!("[panic] {info}");
+        if Platform::debugger_present() {
+            Platform::debug_break();
+        }
+    }));
+
+    Platform::thread_set_name("forge main");
+    log!("[sandbox] thread principal {}", Platform::thread_current_id());
+    log!("[time] contador a {} ticks/s", Platform::time_frequency());
 
     memory_check::run();
 
     // A thread principal tambem executa jobs em `run`: um worker a menos.
     let pool = Pool::start(Platform::logical_processor_count().saturating_sub(1).max(1));
+    pool_bench::run(&pool);
     let mut sum = ParallelSum::new(SUM_VALUES, pool.len() as usize * JOBS_PER_WORKER);
 
     let Some(window) = Platform::window_create(c"forge sandbox", 1280, 720) else {
@@ -45,7 +58,7 @@ fn main() {
         let current = Platform::window_size(&window);
         if current != size {
             size = current;
-            println!("[window] {}x{}", size.0, size.1);
+            log!("[window] {}x{}", size.0, size.1);
         }
 
         let start = Platform::time_ticks();
@@ -58,7 +71,7 @@ fn main() {
 
     Platform::window_destroy(window);
     let jobs = pool.stop();
-    println!("[sandbox] {frames} frames, {jobs} jobs");
+    log!("[sandbox] {frames} frames, {jobs} jobs");
     sum_time.print("sum.run");
 }
 
@@ -87,7 +100,7 @@ impl Timing {
             return;
         }
         let us = |ticks: u64| Platform::time_ticks_to_nanos(ticks) as f64 / 1000.0;
-        println!(
+        log!(
             "[time] {name}: media {:.1} us, min {:.1} us, max {:.1} us ({} medidas)",
             us(self.total / self.count),
             us(self.min),

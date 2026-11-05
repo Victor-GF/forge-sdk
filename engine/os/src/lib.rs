@@ -10,6 +10,11 @@
 //! - [`time`]: relogio monotonico de alta resolucao.
 //! - [`window`]: janela nativa do sistema e seus eventos.
 //! - [`dialog`]: caixas de dialogo modais do sistema.
+//! - [`diagnostics`]: saida de texto (console, debugger) e controle do
+//!   debugger.
+//!
+//! Acima do contrato, [`log!`] formata texto sem `std` e escreve via
+//! `diagnostics`.
 //!
 //! `Os` junta todas as categorias. Cada backend implementa todas num tipo
 //! concreto, e `Platform` aponta para o backend do alvo atual. Hoje so
@@ -46,7 +51,9 @@
 
 #![no_std]
 
+pub mod diagnostics;
 pub mod dialog;
+pub mod log;
 pub mod memory;
 pub mod process;
 pub mod sync;
@@ -64,12 +71,15 @@ pub trait Os:
     + time::Time
     + window::Window
     + dialog::Dialog
+    + diagnostics::Diagnostics
 {
 }
 
-/// `Platform` e as traits de todas as categorias.
+/// `Platform`, as traits de todas as categorias e `log!`.
 pub mod prelude {
+    pub use crate::diagnostics::Diagnostics;
     pub use crate::dialog::Dialog;
+    pub use crate::log;
     pub use crate::memory::{Memory, PageInfo};
     pub use crate::process::Process;
     pub use crate::sync::{SemaphoreHandle, Synchronization};

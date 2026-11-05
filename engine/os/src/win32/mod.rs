@@ -7,7 +7,9 @@
 compile_error!("backend win32 so suporta x86_64: os layouts de `ffi` sao os do Win64.");
 
 mod ffi;
+mod wide;
 
+mod diagnostics;
 mod dialog;
 mod memory;
 mod process;

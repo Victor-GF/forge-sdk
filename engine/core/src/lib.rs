@@ -5,6 +5,8 @@
 
 #![no_std]
 
+pub mod cache;
+
 /// Trava tamanho e alinhamento de um tipo em tempo de compilacao.
 ///
 /// Usado em toda struct `#[repr(C)]` que cruza uma fronteira (FFI com o SO,

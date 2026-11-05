@@ -25,6 +25,11 @@ pub trait Thread {
     /// Id da thread atual, unico entre as threads vivas do sistema.
     fn thread_current_id() -> u32;
 
+    /// Da um nome a thread atual, visto no debugger e em profilers. So da
+    /// thread atual: e o que todas as plataformas suportam. Nomes longos sao
+    /// truncados (o limite varia por plataforma; 15 bytes no Linux).
+    fn thread_set_name(name: &str);
+
     /// Suspende a thread atual por pelo menos `ms` milissegundos.
     fn thread_sleep(ms: u32);
 

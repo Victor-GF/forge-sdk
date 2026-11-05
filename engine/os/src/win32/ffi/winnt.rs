@@ -4,6 +4,7 @@ use forge_core::layout;
 
 pub type LONG = i32;
 pub type LONGLONG = i64;
+pub type HRESULT = LONG;
 pub type WCHAR = u16;
 pub type HANDLE = *mut c_void;
 pub type LPCSTR = *const c_char;

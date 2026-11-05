@@ -16,6 +16,7 @@ pub type INT32 = i32;
 pub type INT64 = i64;
 pub type ATOM = WORD;
 pub type LPVOID = *mut c_void;
+pub type LPCVOID = *const c_void;
 pub type LPDWORD = *mut DWORD;
 pub type LPLONG = *mut LONG;
 

@@ -1,5 +1,22 @@
+use super::basetsd::ULONG_PTR;
 use super::minwindef::{BOOL, DWORD, LPVOID};
+use super::winnt::HANDLE;
 use forge_core::layout;
+
+/// No SDK, `Offset`/`OffsetHigh` estao numa union com `Pointer: PVOID`; aqui
+/// fica so a forma de struct, com o mesmo layout.
+#[repr(C)]
+pub struct OVERLAPPED {
+    pub Internal: ULONG_PTR,
+    pub InternalHigh: ULONG_PTR,
+    pub Offset: DWORD,
+    pub OffsetHigh: DWORD,
+    pub hEvent: HANDLE,
+}
+
+layout!(OVERLAPPED, size = 32, align = 8);
+
+pub type LPOVERLAPPED = *mut OVERLAPPED;
 
 #[repr(C)]
 pub struct SECURITY_ATTRIBUTES {

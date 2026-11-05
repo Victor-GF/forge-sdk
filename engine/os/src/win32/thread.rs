@@ -1,4 +1,4 @@
-use super::{Win32, ffi};
+use super::{Win32, ffi, wide};
 use crate::memory::Memory;
 use crate::thread::{Thread, ThreadEntry, ThreadHandle};
 use core::ffi::c_void;
@@ -57,6 +57,14 @@ impl Thread for Win32 {
     #[inline]
     fn thread_current_id() -> u32 {
         unsafe { ffi::GetCurrentThreadId() }
+    }
+
+    /// O nome e so diagnostico: se `SetThreadDescription` falhar, nada muda.
+    fn thread_set_name(name: &str) {
+        let name = wide::truncated::<64>(name);
+        unsafe {
+            ffi::SetThreadDescription(ffi::GetCurrentThread(), name.as_ptr());
+        }
     }
 
     #[inline]

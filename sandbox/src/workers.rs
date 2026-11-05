@@ -2,30 +2,60 @@
 //!
 //! As threads sao criadas uma vez em `start` e dormem em `wake` ate haver
 //! trabalho. `run` publica um lote e acorda workers; cada um, e a propria
-//! thread que chamou `run`, fica pegando indices do lote ate acabarem e so
-//! entao volta a dormir. Quem termina o ultimo job do lote sinaliza `done`.
+//! thread que chamou `run`, fica pegando blocos de indices do lote ate
+//! acabarem e so entao volta a dormir. Quem termina o ultimo job do lote
+//! sinaliza `done`.
 //!
 //! Por lote, o kernel e chamado no maximo `workers + 2` vezes, nao importa
-//! quantos jobs: o custo por job e um CAS e um `fetch_sub`.
+//! quantos jobs. O custo de coordenacao e um CAS e um `fetch_sub` por bloco.
+//!
+//! # Blocos
+//!
+//! `next` e `remaining` sao true sharing: toda thread escreve neles, e cada
+//! escrita move a linha de cache entre cores (~100 ns). Pegando um indice
+//! por vez, esse custo e por job e limita a vazao do pool inteiro, qualquer
+//! que seja o numero de threads.
+//!
+//! Por isso cada CAS pega um bloco: o que falta no lote dividido por
+//! `split` (participantes x `BLOCKS_PER_PARTICIPANT`), no minimo 1. Blocos
+//! grandes no comeco amortizam a linha contestada; blocos pequenos no fim
+//! mantem o balanceamento, sem uma thread presa com o ultimo bloco grande
+//! enquanto as outras esperam.
 //!
 //! # Indices globais
 //!
 //! `next` e `end` so crescem, nunca voltam a zero. O lote atual ocupa os
 //! indices `base..end`; `jobs[i - base]` e o job do indice `i`. Pegar um
-//! indice e um CAS em `next` que so passa se `next < end`. Disso sai que:
+//! bloco e um CAS em `next` que nunca passa de `end`. Disso sai que:
 //!
 //! - Ao publicar um lote, `next == base`: o lote anterior so terminou depois
 //!   de todos os seus indices serem pegos, e nenhum CAS passa de `end`.
 //! - Um worker atrasado que leu o `end` de um lote antigo nao pega nada.
-//! - Quem pegou um indice do lote atual le `base` e `jobs` desse lote: eles
+//! - Quem pegou um bloco do lote atual le `base` e `jobs` desse lote: eles
 //!   foram publicados antes de `end` (`Release`), e o lote seguinte nao pode
-//!   comecar enquanto esse job nao terminar.
+//!   comecar enquanto esse bloco nao terminar.
+//!
+//! # Cache
+//!
+//! O estado compartilhado fica em tres linhas isoladas, por padrao de escrita:
+//!
+//! - `batch`: escrito uma vez por lote, lido a cada job. Fica em cache em
+//!   todas as cores durante o lote inteiro.
+//! - `next`: CAS a cada bloco pego. True sharing inevitavel; isolado para
+//!   nao invalidar `batch` junto.
+//! - `remaining`: `fetch_sub` a cada bloco terminado. Separado de `next`:
+//!   quem esta pegando um bloco nao disputa linha com quem terminou outro.
 
 use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use forge_core::cache::CacheAligned;
 use forge_os::prelude::*;
+
+/// Em quantos blocos, no maximo, cada participante divide o que falta. Mais
+/// blocos: melhor balanceamento, mais CAS em `next`.
+const BLOCKS_PER_PARTICIPANT: u64 = 4;
 
 /// Uma tarefa: quem a pegar chama `func(data)`.
 ///
@@ -37,9 +67,8 @@ pub struct Job {
     pub data: *mut c_void,
 }
 
-/// Estado visto pelos workers. Fica no heap, num endereco fixo, porque cada
-/// worker guarda um ponteiro para ca desde `thread_create`.
-struct Shared {
+/// O que muda so entre lotes: lido por todos, escrito por `run`.
+struct Batch {
     /// Acorda workers. Fichas a mais sao inofensivas: o worker nao acha
     /// indice livre e volta a dormir.
     wake: SemaphoreHandle,
@@ -49,12 +78,24 @@ struct Shared {
     /// Lote atual e o indice global do `jobs[0]`.
     jobs: AtomicPtr<Job>,
     base: AtomicU64,
-    /// Um depois do ultimo indice do lote atual. So `run` escreve.
+    /// Um depois do ultimo indice do lote atual.
     end: AtomicU64,
+    /// Divisor do que falta para achar o tamanho do bloco. Fixo desde
+    /// `start`: participantes (workers + quem chama `run`) x
+    /// `BLOCKS_PER_PARTICIPANT`.
+    split: u64,
+    /// Workers que ja comecaram: da a cada um seu numero no nome da thread.
+    started: AtomicU32,
+}
+
+/// Estado visto pelos workers. Fica no heap, num endereco fixo, porque cada
+/// worker guarda um ponteiro para ca desde `thread_create`.
+struct Shared {
+    batch: CacheAligned<Batch>,
     /// Proximo indice global a ser pego.
-    next: AtomicU64,
+    next: CacheAligned<AtomicU64>,
     /// Jobs do lote atual que ainda nao terminaram.
-    remaining: AtomicU64,
+    remaining: CacheAligned<AtomicU64>,
 }
 
 /// Dono das threads e do `Shared`. Nao e `Sync`: um `run` por vez, sempre da
@@ -69,33 +110,45 @@ pub struct Pool {
     caller_executed: Cell<u64>,
 }
 
-/// Pega e executa jobs do lote atual ate nao sobrar indice livre. Devolve
-/// quantos executou. Usado pelos workers e por `run`.
+/// Pega e executa blocos do lote atual ate nao sobrar indice livre. Devolve
+/// quantos jobs executou. Usado pelos workers e por `run`.
 fn drain(shared: &Shared) -> u32 {
+    let batch = &shared.batch;
     let mut executed = 0;
     loop {
-        let end = shared.end.load(Ordering::Acquire);
-        let mut i = shared.next.load(Ordering::Relaxed);
-        loop {
-            if i >= end {
+        // Pega `first..first + size`. O tamanho e recalculado a cada
+        // tentativa: depende de quanto falta, que muda se o CAS perder.
+        let end = batch.end.load(Ordering::Acquire);
+        let mut first = shared.next.load(Ordering::Relaxed);
+        let size = loop {
+            if first >= end {
                 return executed;
             }
-            match shared.next.compare_exchange_weak(i, i + 1, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => break,
-                Err(current) => i = current,
+            let size = ((end - first) / batch.split).max(1);
+            match shared.next.compare_exchange_weak(
+                first,
+                first + size,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break size,
+                Err(current) => first = current,
             }
+        };
+
+        // O bloco e do lote publicado junto com `end`: `base` e `jobs` sao
+        // dele.
+        let base = batch.base.load(Ordering::Relaxed);
+        let jobs = unsafe { batch.jobs.load(Ordering::Relaxed).add((first - base) as usize) };
+        for k in 0..size as usize {
+            let job = unsafe { &*jobs.add(k) };
+            (job.func)(job.data);
         }
+        executed += size as u32;
 
-        // `i` e do lote publicado junto com `end`: `base` e `jobs` sao dele.
-        let base = shared.base.load(Ordering::Relaxed);
-        let jobs = shared.jobs.load(Ordering::Relaxed);
-        let job = unsafe { &*jobs.add((i - base) as usize) };
-        (job.func)(job.data);
-        executed += 1;
-
-        // Depois daqui ninguem toca mais no job; quem zera libera o `run`.
-        if shared.remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
-            Platform::semaphore_signal(&shared.done, 1);
+        // Depois daqui ninguem toca mais no bloco; quem zera libera o `run`.
+        if shared.remaining.fetch_sub(size, Ordering::AcqRel) == size {
+            Platform::semaphore_signal(&batch.done, 1);
         }
     }
 }
@@ -103,10 +156,13 @@ fn drain(shared: &Shared) -> u32 {
 /// Devolve quantos jobs este worker executou.
 fn worker(param: *mut c_void) -> u32 {
     let shared = unsafe { &*(param as *const Shared) };
+    let index = shared.batch.started.fetch_add(1, Ordering::Relaxed);
+    Platform::thread_set_name(&format!("forge worker {index}"));
+
     let mut executed = 0;
     loop {
-        Platform::semaphore_wait(&shared.wake);
-        if shared.quit.load(Ordering::Acquire) {
+        Platform::semaphore_wait(&shared.batch.wake);
+        if shared.batch.quit.load(Ordering::Acquire) {
             return executed;
         }
         executed += drain(shared);
@@ -119,20 +175,30 @@ impl Pool {
     pub fn start(count: u32) -> Pool {
         assert!(count > 0, "pool sem workers");
         let shared = Box::into_raw(Box::new(Shared {
-            wake: Platform::semaphore_create(0, i32::MAX as u32).expect("semaphore_create falhou"),
-            done: Platform::semaphore_create(0, 1).expect("semaphore_create falhou"),
-            quit: AtomicBool::new(false),
-            jobs: AtomicPtr::new(ptr::null_mut()),
-            base: AtomicU64::new(0),
-            end: AtomicU64::new(0),
-            next: AtomicU64::new(0),
-            remaining: AtomicU64::new(0),
+            batch: CacheAligned::new(Batch {
+                wake: Platform::semaphore_create(0, i32::MAX as u32)
+                    .expect("semaphore_create falhou"),
+                done: Platform::semaphore_create(0, 1).expect("semaphore_create falhou"),
+                quit: AtomicBool::new(false),
+                jobs: AtomicPtr::new(ptr::null_mut()),
+                base: AtomicU64::new(0),
+                end: AtomicU64::new(0),
+                split: (count as u64 + 1) * BLOCKS_PER_PARTICIPANT,
+                started: AtomicU32::new(0),
+            }),
+            next: CacheAligned::new(AtomicU64::new(0)),
+            remaining: CacheAligned::new(AtomicU64::new(0)),
         }));
         let threads = (0..count)
             .map(|_| Platform::thread_create(worker, shared.cast()).expect("thread_create falhou"))
             .collect();
-        println!("[workers] {count} threads + quem chama run");
-        Pool { shared, threads, submitted: Cell::new(0), caller_executed: Cell::new(0) }
+        log!("[workers] {count} threads + quem chama run");
+        Pool {
+            shared,
+            threads,
+            submitted: Cell::new(0),
+            caller_executed: Cell::new(0),
+        }
     }
 
     #[inline]
@@ -153,26 +219,34 @@ impl Pool {
         }
         let count = jobs.len() as u64;
         let shared = self.shared();
+        let batch = &shared.batch;
 
         // So `run` escreve `end`: o lote novo comeca onde o anterior acabou.
-        let base = shared.end.load(Ordering::Relaxed);
+        let base = batch.end.load(Ordering::Relaxed);
         let end = base + count;
-        shared.jobs.store(jobs.as_ptr().cast_mut(), Ordering::Relaxed);
-        shared.base.store(base, Ordering::Relaxed);
+        batch
+            .jobs
+            .store(jobs.as_ptr().cast_mut(), Ordering::Relaxed);
+        batch.base.store(base, Ordering::Relaxed);
         shared.remaining.store(count, Ordering::Relaxed);
-        shared.end.store(end, Ordering::Release);
+        batch.end.store(end, Ordering::Release);
 
         // Esta thread pega um job; acorda workers para o resto.
         let helpers = (count - 1).min(self.len() as u64) as u32;
         if helpers > 0 {
-            Platform::semaphore_signal(&shared.wake, helpers);
+            Platform::semaphore_signal(&batch.wake, helpers);
         }
 
         let mine = drain(shared);
-        Platform::semaphore_wait(&shared.done);
+        Platform::semaphore_wait(&batch.done);
 
-        assert_eq!(shared.next.load(Ordering::Relaxed), end, "indices pegos a mais ou a menos");
-        self.caller_executed.set(self.caller_executed.get() + mine as u64);
+        assert_eq!(
+            shared.next.load(Ordering::Relaxed),
+            end,
+            "indices pegos a mais ou a menos"
+        );
+        self.caller_executed
+            .set(self.caller_executed.get() + mine as u64);
         self.submitted.set(self.submitted.get() + count);
     }
 
@@ -180,9 +254,13 @@ impl Pool {
     pub fn stop(mut self) -> u64 {
         let workers = self.join_all();
         let caller = self.caller_executed.get();
-        println!("[workers] quem chama run: {caller} jobs");
+        log!("[workers] quem chama run: {caller} jobs");
         let total = workers + caller;
-        assert_eq!(total, self.submitted.get(), "jobs executados divergem dos enviados");
+        assert_eq!(
+            total,
+            self.submitted.get(),
+            "jobs executados divergem dos enviados"
+        );
         total
     }
 
@@ -192,14 +270,14 @@ impl Pool {
         if self.threads.is_empty() {
             return 0;
         }
-        let shared = self.shared();
-        shared.quit.store(true, Ordering::Release);
-        Platform::semaphore_signal(&shared.wake, self.len());
+        let batch = &self.shared().batch;
+        batch.quit.store(true, Ordering::Release);
+        Platform::semaphore_signal(&batch.wake, self.len());
 
         let mut total = 0;
         for (i, thread) in self.threads.drain(..).enumerate() {
             let jobs = Platform::thread_join(thread);
-            println!("[workers] worker {i}: {jobs} jobs");
+            log!("[workers] worker {i}: {jobs} jobs");
             total += jobs as u64;
         }
         total
@@ -212,7 +290,7 @@ impl Drop for Pool {
     fn drop(&mut self) {
         self.join_all();
         let shared = unsafe { Box::from_raw(self.shared) };
-        let Shared { wake, done, .. } = *shared;
+        let Batch { wake, done, .. } = shared.batch.into_inner();
         Platform::semaphore_destroy(wake);
         Platform::semaphore_destroy(done);
     }
