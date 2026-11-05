@@ -118,6 +118,14 @@ pub trait FileSystem {
     /// por cima do definitivo. `false` se falhar.
     fn file_rename(from: &str, to: &str) -> bool;
 
+    /// Copia `from` para `to`, substituindo `to` se existir. `false` se falhar.
+    fn file_copy(from: &str, to: &str) -> bool;
+
+    /// Momento da ultima escrita no arquivo, no relogio de arquivos do SO
+    /// (nao e o de `time`). So serve para comparar com outro valor do mesmo
+    /// arquivo: se mudou, o arquivo foi reescrito. `None` se falhar.
+    fn file_modified(path: &str) -> Option<u64>;
+
     // ---- Diretorios -------------------------------------------------------
 
     /// Cria o diretorio; o pai precisa existir. `true` se criou ou se ja

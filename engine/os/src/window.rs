@@ -3,6 +3,7 @@
 //! Uma janela pertence a thread que a criou: so essa thread pode bombear os
 //! eventos dela e destrui-la. Por isso `WindowHandle` nao e `Send`.
 
+use crate::input::{Keyboard, Mouse};
 use core::ffi::{CStr, c_void};
 
 /// Janela criada por `window_create`. Liberada em `window_destroy`.
@@ -26,4 +27,13 @@ pub trait Window {
 
     /// Tamanho atual da area de desenho, sem bordas nem titulo.
     fn window_size(window: &WindowHandle) -> (u32, u32);
+
+    /// Entrega o input de teclado e mouse acumulado nesta janela desde a
+    /// chamada anterior, e comeca a acumular o proximo frame. Uma vez por
+    /// frame, depois de `window_pump_events`.
+    ///
+    /// Perder o foco solta todas as teclas e botoes: nada fica preso
+    /// apertado depois de um Alt+Tab. O movimento cru (`delta_x`/`delta_y`)
+    /// so chega com a janela em foco.
+    fn window_input(window: &WindowHandle, keyboard: &mut Keyboard, mouse: &mut Mouse);
 }

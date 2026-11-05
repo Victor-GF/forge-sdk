@@ -14,6 +14,9 @@
 //!   debugger.
 //! - [`file`]: arquivos, diretorios e caminhos do jogo (executavel, dados
 //!   do usuario).
+//! - [`input`]: teclado, mouse e gamepads como estado por frame.
+//! - [`library`]: bibliotecas dinamicas, para hot reload e APIs carregadas em
+//!   runtime.
 //!
 //! Acima do contrato, [`forge_log!`] formata texto sem `std` e escreve via
 //! `diagnostics`.
@@ -56,6 +59,8 @@
 pub mod diagnostics;
 pub mod dialog;
 pub mod file;
+pub mod input;
+pub mod library;
 pub mod log;
 pub mod memory;
 pub mod process;
@@ -76,6 +81,8 @@ pub trait Os:
     + dialog::Dialog
     + diagnostics::Diagnostics
     + file::FileSystem
+    + library::Library
+    + input::Gamepads
 {
 }
 
@@ -85,6 +92,10 @@ pub mod prelude {
     pub use crate::dialog::Dialog;
     pub use crate::file::{EntryKind, FileAccess, FileHandle, FileSystem, FileView};
     pub use crate::forge_log;
+    pub use crate::input::{
+        Button, Gamepad, GamepadButton, Gamepads, Input, Key, Keyboard, Mouse, MouseButton,
+    };
+    pub use crate::library::{Library, LibraryHandle};
     pub use crate::memory::{Memory, PageInfo};
     pub use crate::process::Process;
     pub use crate::sync::{SemaphoreHandle, Synchronization};

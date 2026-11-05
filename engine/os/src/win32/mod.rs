@@ -12,6 +12,8 @@ mod wide;
 mod diagnostics;
 mod dialog;
 mod file;
+mod input;
+mod library;
 mod memory;
 mod process;
 mod sync;

@@ -3,6 +3,7 @@ use core::ffi::{c_char, c_void};
 use forge_core::layout;
 
 pub type LONG = i32;
+pub type SHORT = i16;
 pub type LONGLONG = i64;
 pub type HRESULT = LONG;
 pub type WCHAR = u16;

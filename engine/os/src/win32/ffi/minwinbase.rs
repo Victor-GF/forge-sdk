@@ -47,4 +47,8 @@ layout!(WIN32_FIND_DATAW, size = 592, align = 4);
 
 pub type LPWIN32_FIND_DATAW = *mut WIN32_FIND_DATAW;
 
+/// Enum do SDK; so o valor usado.
+pub type GET_FILEEX_INFO_LEVELS = i32;
+pub const GetFileExInfoStandard: GET_FILEEX_INFO_LEVELS = 0;
+
 pub type LPTHREAD_START_ROUTINE = unsafe extern "system" fn(lpThreadParameter: LPVOID) -> DWORD;

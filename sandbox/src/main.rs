@@ -7,21 +7,28 @@
 //! Testa memoria e arquivos uma vez na inicializacao, sobe um pool de
 //! threads, abre uma janela e roda o loop ate o usuario fechar. A cada frame
 //! o pool soma um array em pedacos, divididos entre os workers e a thread
-//! principal, e confere o resultado.
+//! principal, e confere o resultado. O codigo do jogo (`sandbox/game`) roda
+//! numa DLL recarregada quando recompilada (`hot_reload`).
 
 mod file_check;
+mod hot_reload;
 mod memory_check;
 mod parallel_sum;
 mod pool_bench;
 mod workers;
 
 use forge_os::prelude::*;
+use hot_reload::GameCode;
 use parallel_sum::ParallelSum;
 use workers::Pool;
 
 const FRAME_MS: u32 = 16;
 const SUM_VALUES: usize = 1 << 20;
 const JOBS_PER_WORKER: usize = 4;
+/// Memoria do jogo: do executavel, sobrevive ao hot reload.
+const GAME_MEMORY: usize = 1 << 20;
+/// Nome que o cargo da ao cdylib no Windows: sem prefixo `lib`.
+const GAME_DLL: &str = "forge_sandbox_game.dll";
 
 fn main() {
     // Panic vira abort (`panic = "abort"`); antes disso, a mensagem vai para o
@@ -52,6 +59,10 @@ fn main() {
     pool_bench::run(&pool);
     let mut sum = ParallelSum::new(SUM_VALUES, pool.len() as usize * JOBS_PER_WORKER);
 
+    let game_memory = Platform::pages_alloc(GAME_MEMORY);
+    assert!(!game_memory.is_null(), "pages_alloc da memoria do jogo falhou");
+    let mut game = GameCode::new(GAME_DLL);
+
     let Some(window) = Platform::window_create(c"forge sandbox", 1280, 720) else {
         Platform::message_box(c"forge sandbox", c"Falha ao criar a janela.");
         Platform::exit_process(1);
@@ -59,6 +70,9 @@ fn main() {
 
     let mut frames: u64 = 0;
     let mut size = (0, 0);
+    // Os gamepads comparam com o frame anterior: o mesmo `Input` vive o
+    // loop inteiro.
+    let mut input = Input::default();
     let mut sum_time = Timing::new();
     while !Platform::window_close_requested(&window) {
         Platform::window_pump_events();
@@ -69,6 +83,13 @@ fn main() {
             forge_log!("[window] {}x{}", size.0, size.1);
         }
 
+        Platform::window_input(&window, &mut input.keyboard, &mut input.mouse);
+        Platform::gamepads_update(&mut input.gamepads);
+
+        game.poll();
+        // `pages_alloc` entrega memoria zerada e alinhada a pagina, so do jogo.
+        unsafe { game.update(game_memory, GAME_MEMORY, &input, frames) };
+
         let start = Platform::time_ticks();
         sum.run(&pool);
         sum_time.add(Platform::time_ticks() - start);
@@ -78,6 +99,8 @@ fn main() {
     }
 
     Platform::window_destroy(window);
+    drop(game);
+    unsafe { Platform::pages_release(game_memory) };
     let jobs = pool.stop();
     forge_log!("[sandbox] {frames} frames, {jobs} jobs");
     sum_time.print("sum.run");

@@ -191,6 +191,27 @@ impl FileSystem for Win32 {
         unsafe { ffi::MoveFileExW(from.as_ptr(), to.as_ptr(), ffi::MOVEFILE_REPLACE_EXISTING) != 0 }
     }
 
+    fn file_copy(from: &str, to: &str) -> bool {
+        let (Some(from), Some(to)) = (wide_path(from), wide_path(to)) else {
+            return false;
+        };
+        unsafe { ffi::CopyFileW(from.as_ptr(), to.as_ptr(), 0) != 0 }
+    }
+
+    /// `FILETIME` da ultima escrita: intervalos de 100 ns desde 1601.
+    fn file_modified(path: &str) -> Option<u64> {
+        let path = wide_path(path)?;
+        let mut data: ffi::WIN32_FILE_ATTRIBUTE_DATA = unsafe { mem::zeroed() };
+        let ok = unsafe {
+            ffi::GetFileAttributesExW(path.as_ptr(), ffi::GetFileExInfoStandard, (&raw mut data).cast())
+        };
+        if ok == 0 {
+            return None;
+        }
+        let time = data.ftLastWriteTime;
+        Some((time.dwHighDateTime as u64) << 32 | time.dwLowDateTime as u64)
+    }
+
     /// Se ja existe algo com esse nome, so vale como sucesso se for um
     /// diretorio.
     fn directory_create(path: &str) -> bool {

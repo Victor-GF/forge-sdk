@@ -7,6 +7,8 @@ pub type BYTE = u8;
 pub type BOOL = i32;
 pub type BOOLEAN = BYTE;
 pub type WORD = u16;
+pub type USHORT = u16;
+pub type ULONG = u32;
 pub type DWORD = u32;
 pub type UINT = u32;
 pub type INT = i32;
@@ -36,5 +38,9 @@ pub type LRESULT = LONG_PTR;
 
 pub type HINSTANCE = *mut c_void;
 pub type HMODULE = HINSTANCE;
+
+/// No SDK e um ponteiro de funcao que pode ser nulo; aqui, ponteiro cru com o
+/// mesmo layout. Quem usa converte para a assinatura certa.
+pub type FARPROC = *mut c_void;
 
 layout!(HINSTANCE, size = 8, align = 8);
