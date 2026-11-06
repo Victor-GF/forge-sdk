@@ -18,6 +18,7 @@
 //! saida diferente de zero.
 
 use crate::hot_reload::GameCode;
+use forge_os::desktop::*;
 use forge_os::prelude::*;
 use std::ops::Range;
 

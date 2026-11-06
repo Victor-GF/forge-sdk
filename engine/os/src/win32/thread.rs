@@ -1,6 +1,6 @@
 use super::{Win32, ffi, wide};
 use crate::memory::Memory;
-use crate::thread::{Thread, ThreadEntry, ThreadHandle};
+use crate::thread::{Thread, ThreadEntry, ThreadHandle, ThreadOptions, ThreadPriority};
 use core::ffi::c_void;
 use core::{mem, ptr};
 
@@ -20,19 +20,60 @@ unsafe extern "system" fn thread_trampoline(start: ffi::LPVOID) -> ffi::DWORD {
     }
 }
 
+/// Nome da thread no debugger, em UTF-16 com o nulo; mais que isso e cortado.
+const NAME_UNITS: usize = 64;
+
+/// Nome, prioridade e nucleo. So diagnostico e ajuste: se o SO recusar
+/// algum, a thread segue sem ele.
+unsafe fn apply_options(thread: ffi::HANDLE, options: &ThreadOptions) {
+    unsafe {
+        if !options.name.is_empty() {
+            ffi::SetThreadDescription(thread, wide::truncated::<NAME_UNITS>(options.name).as_ptr());
+        }
+        let priority = match options.priority {
+            ThreadPriority::Low => ffi::THREAD_PRIORITY_BELOW_NORMAL,
+            ThreadPriority::Normal => ffi::THREAD_PRIORITY_NORMAL,
+            ThreadPriority::High => ffi::THREAD_PRIORITY_ABOVE_NORMAL,
+        };
+        if priority != ffi::THREAD_PRIORITY_NORMAL {
+            ffi::SetThreadPriority(thread, priority);
+        }
+        // A mascara de afinidade cobre os 64 processadores do grupo da
+        // thread; acima disso o pedido e ignorado.
+        if let Some(core) = options.core.filter(|&core| core < usize::BITS) {
+            ffi::SetThreadAffinityMask(thread, 1usize << core);
+        }
+    }
+}
+
 impl Thread for Win32 {
-    fn thread_create(entry: ThreadEntry, param: *mut c_void) -> Option<ThreadHandle> {
+    /// A thread nasce suspensa: nome, prioridade e nucleo valem desde a
+    /// primeira instrucao, e so depois ela anda.
+    fn thread_create(entry: ThreadEntry, param: *mut c_void, options: &ThreadOptions) -> Option<ThreadHandle> {
         let start = Win32::heap_alloc(mem::size_of::<ThreadStart>()) as *mut ThreadStart;
         if start.is_null() {
             return None;
         }
         unsafe {
             start.write(ThreadStart { entry, param });
-            let handle = ffi::CreateThread(ptr::null_mut(), 0, thread_trampoline, start.cast(), 0, ptr::null_mut());
+            let mut flags = ffi::CREATE_SUSPENDED;
+            if options.stack_size > 0 {
+                flags |= ffi::STACK_SIZE_PARAM_IS_A_RESERVATION;
+            }
+            let handle = ffi::CreateThread(
+                ptr::null_mut(),
+                options.stack_size,
+                thread_trampoline,
+                start.cast(),
+                flags,
+                ptr::null_mut(),
+            );
             if handle.is_null() {
                 Win32::heap_free(start.cast());
                 return None;
             }
+            apply_options(handle, options);
+            ffi::ResumeThread(handle);
             Some(ThreadHandle(handle))
         }
     }
@@ -61,7 +102,7 @@ impl Thread for Win32 {
 
     /// O nome e so diagnostico: se `SetThreadDescription` falhar, nada muda.
     fn thread_set_name(name: &str) {
-        let name = wide::truncated::<64>(name);
+        let name = wide::truncated::<NAME_UNITS>(name);
         unsafe {
             ffi::SetThreadDescription(ffi::GetCurrentThread(), name.as_ptr());
         }

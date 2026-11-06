@@ -6,6 +6,7 @@
 //! UTF-16 nos dois sentidos (abrir pelo nome e ler o nome na listagem).
 
 use forge_os::file::{PATH_CAPACITY, path_parent};
+use forge_os::desktop::*;
 use forge_os::prelude::*;
 
 const SIZE: usize = 100_000;

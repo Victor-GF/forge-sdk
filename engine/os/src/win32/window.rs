@@ -1,11 +1,12 @@
-use super::{Win32, ffi, input};
+use super::{Win32, ffi, input, wide};
 use crate::input::{Keyboard, Mouse, MouseButton};
 use crate::memory::Memory;
-use crate::window::{NativeWindow, Window, WindowHandle};
-use core::ffi::CStr;
+use crate::window::{AppState, DesktopWindow, NativeWindow, Window, WindowHandle};
 use core::{mem, ptr};
 
-const CLASS_NAME: &CStr = c"forge_window";
+const CLASS_NAME: &str = "forge_window";
+/// Unidades UTF-16 do titulo, contando o nulo; mais que isso e cortado.
+const TITLE_UNITS: usize = 256;
 const STYLE: ffi::DWORD = ffi::WS_OVERLAPPEDWINDOW;
 
 /// Estado de uma janela, no heap. `WindowHandle` aponta para ca e o HWND
@@ -13,7 +14,9 @@ const STYLE: ffi::DWORD = ffi::WS_OVERLAPPEDWINDOW;
 struct WindowState {
     instance: ffi::HINSTANCE,
     hwnd: ffi::HWND,
-    close_requested: bool,
+    quit_requested: bool,
+    /// Entre o aviso de suspensao do sistema e a volta.
+    suspending: bool,
     fullscreen: bool,
     /// Posicao e tamanho em janela, guardados ao entrar em tela cheia.
     windowed: ffi::WINDOWPLACEMENT,
@@ -25,7 +28,7 @@ struct WindowState {
 /// Fechar so marca o pedido: destruir a janela e decisao de quem chama.
 ///
 /// O estado e acessado por ponteiro, em trechos curtos: algumas chamadas ao
-/// user32 (`ReleaseCapture`, `DefWindowProcA`) mandam outra mensagem e
+/// user32 (`ReleaseCapture`, `DefWindowProcW`) mandam outra mensagem e
 /// reentram aqui antes de voltar, entao nenhuma referencia ao estado pode
 /// estar viva durante elas.
 unsafe extern "system" fn window_proc(
@@ -35,15 +38,35 @@ unsafe extern "system" fn window_proc(
     lparam: ffi::LPARAM,
 ) -> ffi::LRESULT {
     unsafe {
-        let state = ffi::GetWindowLongPtrA(hwnd, ffi::GWLP_USERDATA) as *mut WindowState;
+        let state = ffi::GetWindowLongPtrW(hwnd, ffi::GWLP_USERDATA) as *mut WindowState;
         if state.is_null() {
-            // Mensagens de dentro do `CreateWindowExA`, antes do estado existir.
-            return ffi::DefWindowProcA(hwnd, msg, wparam, lparam);
+            // Mensagens de dentro do `CreateWindowExW`, antes do estado existir.
+            return ffi::DefWindowProcW(hwnd, msg, wparam, lparam);
         }
         match msg {
             ffi::WM_CLOSE => {
-                (*state).close_requested = true;
+                (*state).quit_requested = true;
                 return 0;
+            }
+            // Logoff ou desligamento: o Windows pergunta se pode, e depois
+            // avisa se vai mesmo. Sempre pode; o jogo ve o pedido e salva.
+            ffi::WM_QUERYENDSESSION => {
+                (*state).quit_requested = true;
+                return 1;
+            }
+            ffi::WM_ENDSESSION => {
+                if wparam != 0 {
+                    (*state).quit_requested = true;
+                }
+                return 0;
+            }
+            ffi::WM_POWERBROADCAST => {
+                match wparam {
+                    ffi::PBT_APMSUSPEND => (*state).suspending = true,
+                    ffi::PBT_APMRESUMESUSPEND | ffi::PBT_APMRESUMEAUTOMATIC => (*state).suspending = false,
+                    _ => {}
+                }
+                return 1;
             }
 
             ffi::WM_KEYDOWN | ffi::WM_KEYUP | ffi::WM_SYSKEYDOWN | ffi::WM_SYSKEYUP => {
@@ -53,11 +76,11 @@ unsafe extern "system" fn window_proc(
                 if let Some(key) = input::key_from_scancode(scancode, extended) {
                     (*state).keyboard.keys[key as usize].set(down);
                 }
-                // Das teclas de sistema, so Alt+F4 vai para o `DefWindowProcA`,
+                // Das teclas de sistema, so Alt+F4 vai para o `DefWindowProcW`,
                 // para continuar fechando a janela. Alt e F10 sozinhos ativariam
                 // o menu da janela, que segura as proximas teclas.
                 if msg == ffi::WM_SYSKEYDOWN && wparam == ffi::VK_F4 {
-                    return ffi::DefWindowProcA(hwnd, msg, wparam, lparam);
+                    return ffi::DefWindowProcW(hwnd, msg, wparam, lparam);
                 }
                 return 0;
             }
@@ -113,7 +136,7 @@ unsafe extern "system" fn window_proc(
                 return 1;
             }
 
-            // O sistema precisa do `DefWindowProcA` depois para limpar a
+            // O sistema precisa do `DefWindowProcW` depois para limpar a
             // mensagem: sem `return`.
             ffi::WM_INPUT => read_raw_input(state, lparam),
 
@@ -128,7 +151,7 @@ unsafe extern "system" fn window_proc(
             }
             _ => {}
         }
-        ffi::DefWindowProcA(hwnd, msg, wparam, lparam)
+        ffi::DefWindowProcW(hwnd, msg, wparam, lparam)
     }
 }
 
@@ -189,32 +212,34 @@ fn state(window: &WindowHandle) -> *mut WindowState {
 impl Window for Win32 {
     /// A classe e registrada a cada chamada: a partir da segunda o registro
     /// falha por ja existir, o que e o esperado. Se falhar de verdade, o
-    /// `CreateWindowExA` falha junto.
+    /// `CreateWindowExW` falha junto.
     ///
     /// Antes de tudo, o processo passa a ver pixels reais (DPI por monitor).
     /// Sem isso, em monitor com escala o Windows desenharia a janela num
     /// tamanho menor e esticaria, borrando tudo. A chamada falha se a
     /// escolha ja foi feita (manifesto, janela anterior): ignorada.
-    fn window_create(title: &CStr, width: u32, height: u32) -> Option<WindowHandle> {
+    fn window_create(title: &str, width: u32, height: u32) -> Option<WindowHandle> {
+        let class_name = wide::truncated::<16>(CLASS_NAME);
+        let title = wide::truncated::<TITLE_UNITS>(title);
         unsafe {
             ffi::SetProcessDpiAwarenessContext(ffi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             let instance = ffi::GetModuleHandleA(ptr::null());
 
-            let class = ffi::WNDCLASSEXA {
-                cbSize: mem::size_of::<ffi::WNDCLASSEXA>() as ffi::UINT,
+            let class = ffi::WNDCLASSEXW {
+                cbSize: mem::size_of::<ffi::WNDCLASSEXW>() as ffi::UINT,
                 style: ffi::CS_HREDRAW | ffi::CS_VREDRAW,
                 lpfnWndProc: window_proc,
                 cbClsExtra: 0,
                 cbWndExtra: 0,
                 hInstance: instance,
                 hIcon: ptr::null_mut(),
-                hCursor: ffi::LoadCursorA(ptr::null_mut(), ffi::IDC_ARROW),
+                hCursor: ffi::LoadCursorW(ptr::null_mut(), ffi::IDC_ARROW),
                 hbrBackground: ptr::null_mut(),
                 lpszMenuName: ptr::null(),
-                lpszClassName: CLASS_NAME.as_ptr(),
+                lpszClassName: class_name.as_ptr(),
                 hIconSm: ptr::null_mut(),
             };
-            ffi::RegisterClassExA(&class);
+            ffi::RegisterClassExW(&class);
 
             let mut rect = ffi::RECT { left: 0, top: 0, right: width as ffi::LONG, bottom: height as ffi::LONG };
             ffi::AdjustWindowRect(&mut rect, STYLE, 0);
@@ -224,9 +249,9 @@ impl Window for Win32 {
                 return None;
             }
 
-            let hwnd = ffi::CreateWindowExA(
+            let hwnd = ffi::CreateWindowExW(
                 0,
-                CLASS_NAME.as_ptr(),
+                class_name.as_ptr(),
                 title.as_ptr(),
                 STYLE,
                 ffi::CW_USEDEFAULT,
@@ -246,13 +271,14 @@ impl Window for Win32 {
             state.write(WindowState {
                 instance,
                 hwnd,
-                close_requested: false,
+                quit_requested: false,
+                suspending: false,
                 fullscreen: false,
                 windowed: mem::zeroed(),
                 keyboard: Keyboard::default(),
                 mouse: Mouse::default(),
             });
-            ffi::SetWindowLongPtrA(hwnd, ffi::GWLP_USERDATA, state as ffi::LONG_PTR);
+            ffi::SetWindowLongPtrW(hwnd, ffi::GWLP_USERDATA, state as ffi::LONG_PTR);
 
             // Movimento cru do mouse, em `WM_INPUT`. Se o registro falhar, o
             // resto do mouse funciona; so `delta_x`/`delta_y` ficam zerados.
@@ -296,16 +322,26 @@ impl Window for Win32 {
     fn window_pump_events() {
         unsafe {
             let mut msg: ffi::MSG = mem::zeroed();
-            while ffi::PeekMessageA(&mut msg, ptr::null_mut(), 0, 0, ffi::PM_REMOVE) != 0 {
+            while ffi::PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, ffi::PM_REMOVE) != 0 {
                 ffi::TranslateMessage(&msg);
-                ffi::DispatchMessageA(&msg);
+                ffi::DispatchMessageW(&msg);
             }
         }
     }
 
-    #[inline]
-    fn window_close_requested(window: &WindowHandle) -> bool {
-        unsafe { (*state(window)).close_requested }
+    /// Foco e visibilidade sao lidos do SO na hora; o resto vem das
+    /// mensagens que `window_proc` ja tratou.
+    fn app_state(window: &WindowHandle) -> AppState {
+        unsafe {
+            let state = state(window);
+            let hwnd = (*state).hwnd;
+            AppState {
+                quit_requested: (*state).quit_requested,
+                focused: ffi::GetForegroundWindow() == hwnd,
+                visible: ffi::IsIconic(hwnd) == 0,
+                suspending: (*state).suspending,
+            }
+        }
     }
 
     fn window_size(window: &WindowHandle) -> (u32, u32) {
@@ -314,79 +350,6 @@ impl Window for Win32 {
             ffi::GetClientRect((*state(window)).hwnd, &mut rect);
             ((rect.right - rect.left) as u32, (rect.bottom - rect.top) as u32)
         }
-    }
-
-    fn window_dpi_scale(window: &WindowHandle) -> f32 {
-        let dpi = unsafe { ffi::GetDpiForWindow((*state(window)).hwnd) };
-        dpi as f32 / ffi::USER_DEFAULT_SCREEN_DPI as f32
-    }
-
-    /// Troca o estilo para `WS_POPUP` (sem borda nem titulo) e cobre o
-    /// monitor onde a janela esta. Voltar devolve o estilo e a posicao
-    /// guardada. Estas chamadas mandam mensagens para `window_proc` antes de
-    /// voltar: o estado so e tocado por ponteiro.
-    fn window_set_fullscreen(window: &WindowHandle, fullscreen: bool) {
-        let state = state(window);
-        unsafe {
-            if (*state).fullscreen == fullscreen {
-                return;
-            }
-            let hwnd = (*state).hwnd;
-            let style = ffi::GetWindowLongPtrA(hwnd, ffi::GWL_STYLE) as u32;
-
-            if fullscreen {
-                let mut windowed: ffi::WINDOWPLACEMENT = mem::zeroed();
-                windowed.length = mem::size_of::<ffi::WINDOWPLACEMENT>() as ffi::UINT;
-                let mut monitor: ffi::MONITORINFO = mem::zeroed();
-                monitor.cbSize = mem::size_of::<ffi::MONITORINFO>() as ffi::DWORD;
-                let monitor_handle = ffi::MonitorFromWindow(hwnd, ffi::MONITOR_DEFAULTTONEAREST);
-                if ffi::GetWindowPlacement(hwnd, &mut windowed) == 0
-                    || ffi::GetMonitorInfoA(monitor_handle, &mut monitor) == 0
-                {
-                    return;
-                }
-                (*state).windowed = windowed;
-                (*state).fullscreen = true;
-
-                let popup = (style & !STYLE) | ffi::WS_POPUP;
-                ffi::SetWindowLongPtrA(hwnd, ffi::GWL_STYLE, popup as ffi::LONG_PTR);
-                let area = monitor.rcMonitor;
-                ffi::SetWindowPos(
-                    hwnd,
-                    ptr::null_mut(),
-                    area.left,
-                    area.top,
-                    area.right - area.left,
-                    area.bottom - area.top,
-                    ffi::SWP_NOOWNERZORDER | ffi::SWP_FRAMECHANGED,
-                );
-            } else {
-                (*state).fullscreen = false;
-                let windowed = ptr::read(&raw const (*state).windowed);
-
-                let normal = (style & !ffi::WS_POPUP) | STYLE;
-                ffi::SetWindowLongPtrA(hwnd, ffi::GWL_STYLE, normal as ffi::LONG_PTR);
-                ffi::SetWindowPlacement(hwnd, &windowed);
-                ffi::SetWindowPos(
-                    hwnd,
-                    ptr::null_mut(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    ffi::SWP_NOMOVE
-                        | ffi::SWP_NOSIZE
-                        | ffi::SWP_NOZORDER
-                        | ffi::SWP_NOOWNERZORDER
-                        | ffi::SWP_FRAMECHANGED,
-                );
-            }
-        }
-    }
-
-    #[inline]
-    fn window_is_fullscreen(window: &WindowHandle) -> bool {
-        unsafe { (*state(window)).fullscreen }
     }
 
     fn window_native(window: &WindowHandle) -> NativeWindow {
@@ -488,5 +451,80 @@ impl Window for Win32 {
         state.mouse.delta_x = 0;
         state.mouse.delta_y = 0;
         state.mouse.wheel = 0.0;
+    }
+}
+
+impl DesktopWindow for Win32 {
+    fn window_dpi_scale(window: &WindowHandle) -> f32 {
+        let dpi = unsafe { ffi::GetDpiForWindow((*state(window)).hwnd) };
+        dpi as f32 / ffi::USER_DEFAULT_SCREEN_DPI as f32
+    }
+
+    /// Troca o estilo para `WS_POPUP` (sem borda nem titulo) e cobre o
+    /// monitor onde a janela esta. Voltar devolve o estilo e a posicao
+    /// guardada. Estas chamadas mandam mensagens para `window_proc` antes de
+    /// voltar: o estado so e tocado por ponteiro.
+    fn window_set_fullscreen(window: &WindowHandle, fullscreen: bool) {
+        let state = state(window);
+        unsafe {
+            if (*state).fullscreen == fullscreen {
+                return;
+            }
+            let hwnd = (*state).hwnd;
+            let style = ffi::GetWindowLongPtrW(hwnd, ffi::GWL_STYLE) as u32;
+
+            if fullscreen {
+                let mut windowed: ffi::WINDOWPLACEMENT = mem::zeroed();
+                windowed.length = mem::size_of::<ffi::WINDOWPLACEMENT>() as ffi::UINT;
+                let mut monitor: ffi::MONITORINFO = mem::zeroed();
+                monitor.cbSize = mem::size_of::<ffi::MONITORINFO>() as ffi::DWORD;
+                let monitor_handle = ffi::MonitorFromWindow(hwnd, ffi::MONITOR_DEFAULTTONEAREST);
+                if ffi::GetWindowPlacement(hwnd, &mut windowed) == 0
+                    || ffi::GetMonitorInfoW(monitor_handle, &mut monitor) == 0
+                {
+                    return;
+                }
+                (*state).windowed = windowed;
+                (*state).fullscreen = true;
+
+                let popup = (style & !STYLE) | ffi::WS_POPUP;
+                ffi::SetWindowLongPtrW(hwnd, ffi::GWL_STYLE, popup as ffi::LONG_PTR);
+                let area = monitor.rcMonitor;
+                ffi::SetWindowPos(
+                    hwnd,
+                    ptr::null_mut(),
+                    area.left,
+                    area.top,
+                    area.right - area.left,
+                    area.bottom - area.top,
+                    ffi::SWP_NOOWNERZORDER | ffi::SWP_FRAMECHANGED,
+                );
+            } else {
+                (*state).fullscreen = false;
+                let windowed = ptr::read(&raw const (*state).windowed);
+
+                let normal = (style & !ffi::WS_POPUP) | STYLE;
+                ffi::SetWindowLongPtrW(hwnd, ffi::GWL_STYLE, normal as ffi::LONG_PTR);
+                ffi::SetWindowPlacement(hwnd, &windowed);
+                ffi::SetWindowPos(
+                    hwnd,
+                    ptr::null_mut(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    ffi::SWP_NOMOVE
+                        | ffi::SWP_NOSIZE
+                        | ffi::SWP_NOZORDER
+                        | ffi::SWP_NOOWNERZORDER
+                        | ffi::SWP_FRAMECHANGED,
+                );
+            }
+        }
+    }
+
+    #[inline]
+    fn window_is_fullscreen(window: &WindowHandle) -> bool {
+        unsafe { (*state(window)).fullscreen }
     }
 }

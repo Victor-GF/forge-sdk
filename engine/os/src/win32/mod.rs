@@ -1,4 +1,5 @@
-//! Backend Win32: implementa o contrato `Os` sobre as chamadas de `ffi`.
+//! Backend Win32: implementa o nucleo `Os` e as capacidades `Desktop` sobre
+//! as chamadas de `ffi`.
 //!
 //! Uma implementacao por categoria, cada uma no seu arquivo. Todo
 //! `extern "system"` continua em `ffi`.
@@ -18,6 +19,7 @@ mod input;
 mod library;
 mod memory;
 mod process;
+mod storage;
 mod sync;
 mod thread;
 mod time;
@@ -26,3 +28,5 @@ mod window;
 pub struct Win32;
 
 impl crate::Os for Win32 {}
+
+impl crate::Desktop for Win32 {}

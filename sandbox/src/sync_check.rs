@@ -45,7 +45,11 @@ pub fn run() {
 
     let start = Platform::time_ticks();
     let threads: Vec<ThreadHandle> = (0..THREADS)
-        .map(|_| Platform::thread_create(add, param).expect("thread_create falhou"))
+        .map(|index| {
+            let name = format!("forge sync {index}");
+            let options = ThreadOptions { name: &name, ..ThreadOptions::default() };
+            Platform::thread_create(add, param, &options).expect("thread_create falhou")
+        })
         .collect();
 
     let mut seen = shared.finished.load(Ordering::Acquire);

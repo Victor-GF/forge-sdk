@@ -49,7 +49,7 @@
 use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use forge_core::cache::CacheAligned;
 use forge_os::prelude::*;
 
@@ -84,8 +84,6 @@ struct Batch {
     /// `start`: participantes (workers + quem chama `run`) x
     /// `BLOCKS_PER_PARTICIPANT`.
     split: u64,
-    /// Workers que ja comecaram: da a cada um seu numero no nome da thread.
-    started: AtomicU32,
 }
 
 /// Estado visto pelos workers. Fica no heap, num endereco fixo, porque cada
@@ -156,9 +154,6 @@ fn drain(shared: &Shared) -> u32 {
 /// Devolve quantos jobs este worker executou.
 fn worker(param: *mut c_void) -> u32 {
     let shared = unsafe { &*(param as *const Shared) };
-    let index = shared.batch.started.fetch_add(1, Ordering::Relaxed);
-    Platform::thread_set_name(&format!("forge worker {index}"));
-
     let mut executed = 0;
     loop {
         Platform::semaphore_wait(&shared.batch.wake);
@@ -184,13 +179,16 @@ impl Pool {
                 base: AtomicU64::new(0),
                 end: AtomicU64::new(0),
                 split: (count as u64 + 1) * BLOCKS_PER_PARTICIPANT,
-                started: AtomicU32::new(0),
             }),
             next: CacheAligned::new(AtomicU64::new(0)),
             remaining: CacheAligned::new(AtomicU64::new(0)),
         }));
         let threads = (0..count)
-            .map(|_| Platform::thread_create(worker, shared.cast()).expect("thread_create falhou"))
+            .map(|index| {
+                let name = format!("forge worker {index}");
+                let options = ThreadOptions { name: &name, ..ThreadOptions::default() };
+                Platform::thread_create(worker, shared.cast(), &options).expect("thread_create falhou")
+            })
             .collect();
         forge_log!("[workers] {count} threads + quem chama run");
         Pool {

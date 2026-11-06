@@ -1,5 +1,13 @@
-//! Arquivos: ler, escrever e mapear arquivos, listar diretorios e achar os
-//! caminhos do jogo.
+//! Arquivos: ler arquivos abertos e, no desktop, caminhos arbitrarios.
+//!
+//! Duas traits:
+//! - [`Files`], no nucleo (`Os`): ler, mapear e fechar um arquivo ja aberto.
+//!   Os arquivos do jogo chegam por [`Storage`](crate::storage::Storage):
+//!   conteudo e saves, sem caminho.
+//! - [`FileSystem`], so em desktop (`Desktop`): abrir qualquer caminho,
+//!   escrever, renomear, listar diretorios, achar o executavel. Ferramentas,
+//!   editores e hot reload; um console em retail nao deixa o jogo ver o
+//!   sistema de arquivos.
 //!
 //! # Caminhos
 //!
@@ -7,8 +15,7 @@
 //! (o Windows aceita `/`). Caminhos devolvidos pelo SO tambem vem com `/`.
 //!
 //! Caminho relativo e resolvido a partir do diretorio de trabalho, que
-//! depende de quem abriu o jogo (atalho, terminal, debugger). Para assets,
-//! monte o caminho a partir de [`FileSystem::path_executable`].
+//! depende de quem abriu o jogo (atalho, terminal, debugger).
 //!
 //! Sem alocacao: o que o SO devolve e escrito num buffer de quem chama.
 //! [`PATH_CAPACITY`] bytes bastam na pratica; caminho que nao cabe falha.
@@ -30,8 +37,8 @@ use core::slice;
 /// caracteres fora do ASCII.
 pub const PATH_CAPACITY: usize = 1024;
 
-/// Arquivo aberto por `file_open`. Pode ser lido e escrito de varias threads
-/// ao mesmo tempo (`*_at`). Precisa terminar em `file_close`.
+/// Arquivo aberto (por `content_open` ou `file_open`). Pode ser lido de
+/// varias threads ao mesmo tempo (`*_at`). Precisa terminar em `file_close`.
 pub struct FileHandle(pub(crate) *mut c_void);
 
 unsafe impl Send for FileHandle {}
@@ -81,13 +88,8 @@ pub fn path_parent(path: &str) -> &str {
     }
 }
 
-pub trait FileSystem {
-    // ---- Arquivos ---------------------------------------------------------
-
-    /// Abre `path` para `access`. `None` se falhar (nao existe, sem
-    /// permissao, caminho invalido ou longo demais).
-    fn file_open(path: &str, access: FileAccess) -> Option<FileHandle>;
-
+/// Arquivo ja aberto: o que toda plataforma faz.
+pub trait Files {
     fn file_close(file: FileHandle);
 
     /// Tamanho atual do arquivo, em bytes. `None` se falhar.
@@ -98,24 +100,32 @@ pub trait FileSystem {
     /// zero se `offset` ja passou do fim. `None` se falhar.
     fn file_read_at(file: &FileHandle, offset: u64, buf: &mut [u8]) -> Option<usize>;
 
-    /// Escreve `data` inteiro a partir de `offset`; passar do fim aumenta o
-    /// arquivo. `false` se falhar, e entao parte pode ter sido escrita.
-    fn file_write_at(file: &FileHandle, offset: u64, data: &[u8]) -> bool;
-
     /// Mapeia o arquivo inteiro, so leitura, sem copia: as paginas sao lidas
-    /// do disco quando acessadas. O arquivo precisa ter sido aberto com
-    /// `Read`. `None` se falhar ou se o arquivo estiver vazio.
+    /// do disco quando acessadas. O arquivo precisa ter sido aberto para
+    /// leitura. `None` se falhar ou se o arquivo estiver vazio.
     fn file_map(file: &FileHandle) -> Option<FileView>;
 
     fn file_unmap(view: FileView);
+}
+
+/// Caminhos arbitrarios: desktop e ferramentas.
+pub trait FileSystem {
+    // ---- Arquivos ---------------------------------------------------------
+
+    /// Abre `path` para `access`. `None` se falhar (nao existe, sem
+    /// permissao, caminho invalido ou longo demais).
+    fn file_open(path: &str, access: FileAccess) -> Option<FileHandle>;
+
+    /// Escreve `data` inteiro a partir de `offset`; passar do fim aumenta o
+    /// arquivo. O arquivo precisa ter sido aberto com `Write`. `false` se
+    /// falhar, e entao parte pode ter sido escrita.
+    fn file_write_at(file: &FileHandle, offset: u64, data: &[u8]) -> bool;
 
     /// Apaga o arquivo. `false` se falhar.
     fn file_delete(path: &str) -> bool;
 
     /// Renomeia ou move `from` para `to`, substituindo `to` se existir. No
-    /// mesmo volume, a troca e atomica: para salvar sem risco de deixar um
-    /// arquivo pela metade se o jogo cair, escreva num temporario e renomeie
-    /// por cima do definitivo. `false` se falhar.
+    /// mesmo volume, a troca e atomica. `false` se falhar.
     fn file_rename(from: &str, to: &str) -> bool;
 
     /// Copia `from` para `to`, substituindo `to` se existir. `false` se falhar.
@@ -141,14 +151,14 @@ pub trait FileSystem {
     /// reabrir com `&str`. `false` se o diretorio nao abriu.
     fn directory_list(path: &str, visit: impl FnMut(&str, EntryKind)) -> bool;
 
-    // ---- Caminhos do jogo -------------------------------------------------
+    // ---- Caminhos ---------------------------------------------------------
 
-    /// Caminho completo do executavel, escrito em `out`. O diretorio dele
-    /// ([`path_parent`]) e a base para os assets. `None` se nao couber.
+    /// Caminho completo do executavel, escrito em `out`. `None` se nao
+    /// couber.
     fn path_executable(out: &mut [u8]) -> Option<&str>;
 
-    /// Diretorio do usuario para dados de aplicativos, escrito em `out`:
-    /// saves e configuracoes vao numa subpasta com o nome do jogo, criada
-    /// com `directory_create`. `None` se falhar ou nao couber.
+    /// Diretorio do usuario para dados de aplicativos, escrito em `out`.
+    /// `None` se falhar ou nao couber. Para saves, use `Storage`, que e
+    /// portavel.
     fn path_user_data(out: &mut [u8]) -> Option<&str>;
 }

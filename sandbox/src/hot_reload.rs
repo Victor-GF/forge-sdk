@@ -16,6 +16,7 @@
 use core::ffi::c_void;
 use core::mem;
 use forge_os::file::{PATH_CAPACITY, path_parent};
+use forge_os::desktop::*;
 use forge_os::prelude::*;
 
 /// Assinatura de `game_update` em `sandbox/game/src/lib.rs`.

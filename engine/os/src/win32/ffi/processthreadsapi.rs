@@ -1,6 +1,6 @@
 use super::basetsd::SIZE_T;
 use super::minwinbase::{LPSECURITY_ATTRIBUTES, LPTHREAD_START_ROUTINE};
-use super::minwindef::{BOOL, DWORD, LPDWORD, LPVOID, UINT};
+use super::minwindef::{BOOL, DWORD, INT, LPDWORD, LPVOID, UINT};
 use super::winnt::{HANDLE, HRESULT, LPCWSTR};
 
 #[link(name = "kernel32", kind = "raw-dylib")]
@@ -15,6 +15,8 @@ unsafe extern "system" {
         dwCreationFlags: DWORD,
         lpThreadId: LPDWORD,
     ) -> HANDLE;
+    pub fn ResumeThread(hThread: HANDLE) -> DWORD;
+    pub fn SetThreadPriority(hThread: HANDLE, nPriority: INT) -> BOOL;
     pub fn GetExitCodeThread(hThread: HANDLE, lpExitCode: LPDWORD) -> BOOL;
     pub fn GetCurrentThreadId() -> DWORD;
     pub fn GetCurrentThread() -> HANDLE;

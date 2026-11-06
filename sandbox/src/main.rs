@@ -25,6 +25,7 @@ mod hot_reload;
 mod memory_check;
 mod parallel_sum;
 mod pool_bench;
+mod storage_check;
 mod sync_check;
 mod timing;
 mod workers;
@@ -32,6 +33,7 @@ mod workers;
 use audio_demo::AudioDemo;
 use auto::Auto;
 use forge_core::cache::CACHE_LINE;
+use forge_os::desktop::*;
 use forge_os::prelude::*;
 use hot_reload::{Framebuffer, GameCode};
 use parallel_sum::ParallelSum;
@@ -76,6 +78,7 @@ fn main() {
     log_cpu();
     memory_check::run();
     file_check::run();
+    storage_check::run(GAME_DLL);
     sync_check::run();
 
     // A thread principal tambem executa jobs em `run`: um worker a menos.
@@ -87,8 +90,8 @@ fn main() {
     assert!(!game_memory.is_null(), "pages_alloc da memoria do jogo falhou");
     let mut game = GameCode::new(GAME_DLL);
 
-    let Some(window) = Platform::window_create(c"forge sandbox", 1280, 720) else {
-        Platform::message_box(c"forge sandbox", c"Falha ao criar a janela.");
+    let Some(window) = Platform::window_create("forge sandbox", 1280, 720) else {
+        Platform::message_box("forge sandbox", "Falha ao criar a janela.");
         Platform::exit_process(1);
     };
     forge_log!(
@@ -116,8 +119,25 @@ fn main() {
     let mut sum_time = Timing::new();
     let mut screen = Framebuffer::new(SCREEN_WIDTH, SCREEN_HEIGHT);
     let mut present_time = Timing::new();
-    while !Platform::window_close_requested(&window) {
+    // Comeca com o estado que o jogo assumiria: em foco e visivel. As
+    // mudancas sao logadas, que e o que um jogo usaria para pausar.
+    let mut app = AppState { focused: true, visible: true, ..AppState::default() };
+    loop {
         Platform::window_pump_events();
+        let now_app = Platform::app_state(&window);
+        if now_app != app {
+            forge_log!(
+                "[app] foco {}, visivel {}, suspendendo {}, encerrar {}",
+                now_app.focused,
+                now_app.visible,
+                now_app.suspending,
+                now_app.quit_requested
+            );
+            app = now_app;
+        }
+        if app.quit_requested {
+            break;
+        }
 
         let current = Platform::window_size(&window);
         if current != size {

@@ -1,5 +1,5 @@
 use super::{Win32, ffi, wide};
-use crate::file::{EntryKind, FileAccess, FileHandle, FileSystem, FileView, PATH_CAPACITY};
+use crate::file::{EntryKind, FileAccess, FileHandle, FileSystem, FileView, Files, PATH_CAPACITY};
 use core::{mem, ptr, slice, str};
 
 /// Unidades UTF-16 de um caminho de entrada, contando o nulo. Cada byte
@@ -59,30 +59,7 @@ fn until_nul(units: &[u16]) -> &[u16] {
     &units[..len]
 }
 
-impl FileSystem for Win32 {
-    fn file_open(path: &str, access: FileAccess) -> Option<FileHandle> {
-        let path = wide_path(path)?;
-        let (desired, disposition) = match access {
-            FileAccess::Read => (ffi::GENERIC_READ, ffi::OPEN_EXISTING),
-            FileAccess::Write => (ffi::GENERIC_WRITE, ffi::CREATE_ALWAYS),
-        };
-        let handle = unsafe {
-            ffi::CreateFileW(
-                path.as_ptr(),
-                desired,
-                SHARE_ALL,
-                ptr::null_mut(),
-                disposition,
-                ffi::FILE_ATTRIBUTE_NORMAL,
-                ptr::null_mut(),
-            )
-        };
-        if handle == ffi::INVALID_HANDLE_VALUE {
-            return None;
-        }
-        Some(FileHandle(handle))
-    }
-
+impl Files for Win32 {
     #[inline]
     fn file_close(file: FileHandle) {
         unsafe {
@@ -123,23 +100,6 @@ impl FileSystem for Win32 {
         Some(filled)
     }
 
-    fn file_write_at(file: &FileHandle, offset: u64, data: &[u8]) -> bool {
-        let mut done = 0;
-        while done < data.len() {
-            let size = (data.len() - done).min(IO_CHUNK) as ffi::DWORD;
-            let mut overlapped = at(offset + done as u64);
-            let mut written: ffi::DWORD = 0;
-            let ok = unsafe {
-                ffi::WriteFile(file.0, data[done..].as_ptr().cast(), size, &mut written, &mut overlapped)
-            };
-            if ok == 0 || written == 0 {
-                return false;
-            }
-            done += written as usize;
-        }
-        true
-    }
-
     /// O tamanho vai explicito no mapeamento: se o arquivo encolher entre
     /// `file_size` e aqui, o mapeamento falha em vez de ficar menor que `len`.
     fn file_map(file: &FileHandle) -> Option<FileView> {
@@ -175,6 +135,48 @@ impl FileSystem for Win32 {
         unsafe {
             ffi::UnmapViewOfFile(view.ptr.cast());
         }
+    }
+}
+
+impl FileSystem for Win32 {
+    fn file_open(path: &str, access: FileAccess) -> Option<FileHandle> {
+        let path = wide_path(path)?;
+        let (desired, disposition) = match access {
+            FileAccess::Read => (ffi::GENERIC_READ, ffi::OPEN_EXISTING),
+            FileAccess::Write => (ffi::GENERIC_WRITE, ffi::CREATE_ALWAYS),
+        };
+        let handle = unsafe {
+            ffi::CreateFileW(
+                path.as_ptr(),
+                desired,
+                SHARE_ALL,
+                ptr::null_mut(),
+                disposition,
+                ffi::FILE_ATTRIBUTE_NORMAL,
+                ptr::null_mut(),
+            )
+        };
+        if handle == ffi::INVALID_HANDLE_VALUE {
+            return None;
+        }
+        Some(FileHandle(handle))
+    }
+
+    fn file_write_at(file: &FileHandle, offset: u64, data: &[u8]) -> bool {
+        let mut done = 0;
+        while done < data.len() {
+            let size = (data.len() - done).min(IO_CHUNK) as ffi::DWORD;
+            let mut overlapped = at(offset + done as u64);
+            let mut written: ffi::DWORD = 0;
+            let ok = unsafe {
+                ffi::WriteFile(file.0, data[done..].as_ptr().cast(), size, &mut written, &mut overlapped)
+            };
+            if ok == 0 || written == 0 {
+                return false;
+            }
+            done += written as usize;
+        }
+        true
     }
 
     fn file_delete(path: &str) -> bool {

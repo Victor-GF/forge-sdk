@@ -45,6 +45,7 @@ unsafe extern "system" {
         lpNumberOfBytesWritten: LPDWORD,
         lpOverlapped: LPOVERLAPPED,
     ) -> BOOL;
+    pub fn FlushFileBuffers(hFile: HANDLE) -> BOOL;
     pub fn GetFileSizeEx(hFile: HANDLE, lpFileSize: PLARGE_INTEGER) -> BOOL;
     pub fn GetFileAttributesW(lpFileName: LPCWSTR) -> DWORD;
     pub fn GetFileAttributesExW(
