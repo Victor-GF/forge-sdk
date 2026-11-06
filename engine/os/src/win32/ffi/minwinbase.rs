@@ -1,3 +1,5 @@
+#![allow(non_upper_case_globals)]
+
 use super::basetsd::ULONG_PTR;
 use super::minwindef::{BOOL, DWORD, FILETIME, LPVOID, MAX_PATH};
 use super::winnt::{HANDLE, WCHAR};

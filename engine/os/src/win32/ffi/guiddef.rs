@@ -9,3 +9,9 @@ pub struct GUID {
 }
 
 layout!(GUID, size = 16, align = 4);
+
+pub type IID = GUID;
+pub type CLSID = GUID;
+pub type REFIID = *const IID;
+pub type REFCLSID = *const CLSID;
+pub type LPCGUID = *const GUID;

@@ -1,3 +1,5 @@
+#![allow(non_upper_case_globals)]
+
 use super::shtypes::KNOWNFOLDERID;
 
 /// `{3EB685DB-65F9-4CF6-A03A-E3EF65729F3D}`: `%APPDATA%`.

@@ -6,7 +6,9 @@
 //! - [`process`]: ciclo de vida do processo.
 //! - [`memory`]: paginas de memoria virtual e heap do processo.
 //! - [`thread`]: criacao, espera e controle de threads.
-//! - [`sync`]: primitivas de sincronizacao que bloqueiam no SO.
+//! - [`sync`]: semaforo, mutex leve e espera em endereco.
+//! - [`cpu`]: topologia da CPU (nucleos, SMT, caches).
+//! - [`audio`]: saida de som, com o jogo empurrando amostras.
 //! - [`time`]: relogio monotonico de alta resolucao e espera precisa.
 //! - [`window`]: janela nativa do sistema, seus eventos e o que a API grafica
 //!   precisa dela.
@@ -57,6 +59,8 @@
 
 #![no_std]
 
+pub mod audio;
+pub mod cpu;
 pub mod diagnostics;
 pub mod dialog;
 pub mod file;
@@ -84,11 +88,15 @@ pub trait Os:
     + file::FileSystem
     + library::Library
     + input::Gamepads
+    + cpu::Cpu
+    + audio::Audio
 {
 }
 
 /// `Platform`, as traits de todas as categorias e `forge_log!`.
 pub mod prelude {
+    pub use crate::audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, Audio, AudioHandle};
+    pub use crate::cpu::{Cpu, CpuTopology};
     pub use crate::diagnostics::Diagnostics;
     pub use crate::dialog::Dialog;
     pub use crate::file::{EntryKind, FileAccess, FileHandle, FileSystem, FileView};
@@ -99,7 +107,7 @@ pub mod prelude {
     pub use crate::library::{Library, LibraryHandle};
     pub use crate::memory::{Memory, PageInfo};
     pub use crate::process::Process;
-    pub use crate::sync::{SemaphoreHandle, Synchronization};
+    pub use crate::sync::{Mutex, SemaphoreHandle, Synchronization};
     pub use crate::thread::{Thread, ThreadEntry, ThreadHandle};
     pub use crate::time::{Time, TimerHandle};
     pub use crate::window::{NativeWindow, Window, WindowHandle};

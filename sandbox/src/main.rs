@@ -4,20 +4,25 @@
 //! funcionalidades em runtime. Fica fora de `engine/`: nada da engine pode
 //! depender daqui.
 //!
-//! Testa memoria e arquivos uma vez na inicializacao, sobe um pool de
-//! threads, abre uma janela e roda o loop ate o usuario fechar. A cada frame
-//! o pool soma um array em pedacos, divididos entre os workers e a thread
-//! principal, e confere o resultado. O ritmo e de `FRAME_RATE` frames por
-//! segundo, com espera precisa. O codigo do jogo (`sandbox/game`) roda
-//! numa DLL recarregada quando recompilada (`hot_reload`).
+//! Loga a CPU e testa memoria, arquivos e sincronizacao na inicializacao,
+//! sobe um pool de threads, abre uma janela e roda o loop ate o usuario
+//! fechar. A cada frame o pool soma um array em pedacos, divididos entre os
+//! workers e a thread principal, e confere o resultado. O ritmo e de
+//! `FRAME_RATE` frames por segundo, com espera precisa. O codigo do jogo
+//! (`sandbox/game`) roda numa DLL recarregada quando recompilada
+//! (`hot_reload`).
 
+mod audio_demo;
 mod file_check;
 mod hot_reload;
 mod memory_check;
 mod parallel_sum;
 mod pool_bench;
+mod sync_check;
 mod workers;
 
+use audio_demo::AudioDemo;
+use forge_core::cache::CACHE_LINE;
 use forge_os::prelude::*;
 use hot_reload::GameCode;
 use parallel_sum::ParallelSum;
@@ -53,8 +58,10 @@ fn main() {
         panic!("panic de teste pedido por --panic (çã)");
     }
 
+    log_cpu();
     memory_check::run();
     file_check::run();
+    sync_check::run();
 
     // A thread principal tambem executa jobs em `run`: um worker a menos.
     let pool = Pool::start(Platform::logical_processor_count().saturating_sub(1).max(1));
@@ -81,6 +88,7 @@ fn main() {
     let mut next_frame = Platform::time_ticks() + frame_ticks;
     let mut last_frame = Platform::time_ticks();
     let mut frame_time = Timing::new();
+    let mut audio = AudioDemo::new(FRAME_RATE);
 
     let mut frames: u64 = 0;
     let mut size = (0, 0);
@@ -107,6 +115,7 @@ fn main() {
             Platform::window_set_fullscreen(&window, fullscreen);
             forge_log!("[window] tela cheia: {fullscreen}");
         }
+        audio.update(keyboard);
 
         game.poll();
         // `pages_alloc` entrega memoria zerada e alinhada a pagina, so do jogo.
@@ -131,6 +140,7 @@ fn main() {
         }
     }
 
+    drop(audio);
     Platform::window_destroy(window);
     drop(game);
     unsafe { Platform::pages_release(game_memory) };
@@ -139,6 +149,31 @@ fn main() {
     sum_time.print("sum.run");
     frame_time.print("frame");
     Platform::timer_destroy(timer);
+}
+
+/// Topologia da CPU, e se o `CACHE_LINE` de compilacao bate com a linha real.
+fn log_cpu() {
+    let Some(cpu) = Platform::cpu_topology() else {
+        forge_log!("[cpu] topologia indisponivel");
+        return;
+    };
+    forge_log!(
+        "[cpu] {} nucleos fisicos ({} de desempenho), {} logicos",
+        cpu.physical_cores,
+        cpu.performance_cores,
+        cpu.logical_processors
+    );
+    forge_log!(
+        "[cpu] L1d {} KB, L2 {} KB, L3 {} KB x{}, linha {} B",
+        cpu.l1_data / 1024,
+        cpu.l2 / 1024,
+        cpu.l3 / 1024,
+        cpu.l3_count,
+        cpu.cache_line
+    );
+    if cpu.cache_line != 0 && cpu.cache_line as usize != CACHE_LINE {
+        forge_log!("[cpu] aviso: CACHE_LINE e {CACHE_LINE}, mas a linha real e {}", cpu.cache_line);
+    }
 }
 
 /// Minimo, media e maximo de uma medida repetida, em ticks.
