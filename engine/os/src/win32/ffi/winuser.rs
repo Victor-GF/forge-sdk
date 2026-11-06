@@ -1,6 +1,6 @@
 use super::basetsd::LONG_PTR;
 use super::minwindef::{ATOM, BOOL, DWORD, HINSTANCE, INT, LPARAM, LPVOID, LRESULT, UINT, ULONG, USHORT, WPARAM};
-use super::windef::{DPI_AWARENESS_CONTEXT, HBRUSH, HCURSOR, HICON, HMENU, HMONITOR, HWND, POINT, RECT};
+use super::windef::{DPI_AWARENESS_CONTEXT, HBRUSH, HCURSOR, HDC, HICON, HMENU, HMONITOR, HWND, POINT, RECT};
 use super::winnt::{HANDLE, LONG, LPCSTR};
 use core::ffi::c_void;
 use forge_core::layout;
@@ -225,6 +225,9 @@ unsafe extern "system" {
     pub fn GetDpiForWindow(hwnd: HWND) -> UINT;
     /// Windows 10 1607 em diante.
     pub fn AdjustWindowRectExForDpi(lpRect: *mut RECT, dwStyle: DWORD, bMenu: BOOL, dwExStyle: DWORD, dpi: UINT) -> BOOL;
+
+    pub fn GetDC(hWnd: HWND) -> HDC;
+    pub fn ReleaseDC(hWnd: HWND, hDC: HDC) -> INT;
 
     pub fn SetCapture(hWnd: HWND) -> HWND;
     pub fn ReleaseCapture() -> BOOL;

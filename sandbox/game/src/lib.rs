@@ -14,17 +14,32 @@
 //! esquerdo movem o "jogador"; clique esquerdo loga a posicao do cursor; a
 //! roda loga o giro; arrastar com o botao direito loga o movimento cru; o
 //! botao `South` do gamepad (A no Xbox) loga analogicos e gatilhos.
+//!
+//! Desenho: o jogo pinta um framebuffer do sandbox (`pixels`, `0x00RRGGBB`,
+//! linhas de cima para baixo), que o SO mostra esticado na janela. Fundo com
+//! grade, uma faixa que anda sozinha (engasgos de frame aparecem como saltos
+//! nela) e o jogador.
 
 use forge_os::forge_log;
 use forge_os::input::{GamepadButton, Input, Key, MouseButton};
 
-const MESSAGE: &str = "versao 7";
+const MESSAGE: &str = "versao 8";
 
 /// A cada quantos frames loga o estado.
 const LOG_EVERY: u64 = 60;
 
 /// Unidades por frame com a direcao no maximo.
 const SPEED: f32 = 0.1;
+
+/// Pixels do framebuffer por unidade do mundo.
+const PIXELS_PER_UNIT: f32 = 16.0;
+const PLAYER_SIZE: i32 = 12;
+const GRID: usize = 16;
+
+const BACKGROUND: u32 = 0x0018_1C24;
+const GRID_COLOR: u32 = 0x0024_2A36;
+const SWEEP_COLOR: u32 = 0x0030_3C50;
+const PLAYER_COLOR: u32 = 0x00FF_CC33;
 
 #[repr(C)]
 struct State {
@@ -44,12 +59,26 @@ struct State {
 /// # Safety
 /// `memory` aponta para `size` bytes alinhados a pagina, zerados antes da
 /// primeira chamada e usados so por esta funcao. `input` e valido durante a
-/// chamada.
+/// chamada. `pixels` aponta para `width * height` pixels, so desta funcao
+/// durante a chamada.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn game_update(memory: *mut u8, size: usize, input: *const Input, frame: u64) {
+pub unsafe extern "C" fn game_update(
+    memory: *mut u8,
+    size: usize,
+    input: *const Input,
+    pixels: *mut u32,
+    width: u32,
+    height: u32,
+    frame: u64,
+) {
     assert!(size >= size_of::<State>(), "memoria do jogo pequena demais");
     let state = unsafe { &mut *(memory as *mut State) };
     let input = unsafe { &*input };
+    let screen = Screen {
+        pixels: unsafe { core::slice::from_raw_parts_mut(pixels, width as usize * height as usize) },
+        width: width as usize,
+        height: height as usize,
+    };
     if !state.initialized {
         state.initialized = true;
         forge_log!("[game] estado inicializado");
@@ -120,6 +149,8 @@ pub unsafe extern "C" fn game_update(memory: *mut u8, size: usize, input: *const
         }
     }
 
+    draw(screen, state, frame);
+
     if frame % LOG_EVERY == 0 {
         forge_log!(
             "[game] {MESSAGE}: {} updates, jogador em ({:.1}, {:.1})",
@@ -128,4 +159,44 @@ pub unsafe extern "C" fn game_update(memory: *mut u8, size: usize, input: *const
             state.y
         );
     }
+}
+
+/// O framebuffer do frame: `width * height` pixels, linha a linha.
+struct Screen<'a> {
+    pixels: &'a mut [u32],
+    width: usize,
+    height: usize,
+}
+
+impl Screen<'_> {
+    /// Retangulo cortado nas bordas da tela.
+    fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, color: u32) {
+        let x0 = x.clamp(0, self.width as i32) as usize;
+        let y0 = y.clamp(0, self.height as i32) as usize;
+        let x1 = (x + w).clamp(0, self.width as i32) as usize;
+        let y1 = (y + h).clamp(0, self.height as i32) as usize;
+        for row in y0..y1 {
+            self.pixels[row * self.width + x0..row * self.width + x1].fill(color);
+        }
+    }
+}
+
+fn draw(mut screen: Screen, state: &State, frame: u64) {
+    screen.pixels.fill(BACKGROUND);
+    let (width, height) = (screen.width as i32, screen.height as i32);
+    for x in (0..screen.width).step_by(GRID) {
+        screen.fill_rect(x as i32, 0, 1, height, GRID_COLOR);
+    }
+    for y in (0..screen.height).step_by(GRID) {
+        screen.fill_rect(0, y as i32, width, 1, GRID_COLOR);
+    }
+
+    // Anda 2 pixels por frame, sempre: um frame perdido vira um salto.
+    let sweep = (frame * 2 % screen.width as u64) as i32;
+    screen.fill_rect(sweep, 0, 4, height, SWEEP_COLOR);
+
+    // Mundo com y para cima, origem no centro; tela com y para baixo.
+    let px = width / 2 + (state.x * PIXELS_PER_UNIT) as i32 - PLAYER_SIZE / 2;
+    let py = height / 2 - (state.y * PIXELS_PER_UNIT) as i32 - PLAYER_SIZE / 2;
+    screen.fill_rect(px, py, PLAYER_SIZE, PLAYER_SIZE, PLAYER_COLOR);
 }

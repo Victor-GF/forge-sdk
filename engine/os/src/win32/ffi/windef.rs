@@ -8,6 +8,7 @@ pub type HCURSOR = HICON;
 pub type HBRUSH = *mut c_void;
 pub type HMENU = *mut c_void;
 pub type HMONITOR = *mut c_void;
+pub type HDC = *mut c_void;
 
 /// `DECLARE_HANDLE` no SDK; os valores predefinidos sao negativos.
 pub type DPI_AWARENESS_CONTEXT = *mut c_void;

@@ -33,6 +33,11 @@ pub struct AudioDemo {
     gain: f32,
     on: bool,
     retry_in: u32,
+    /// A fila ja recebeu amostras: daqui em diante, achar ela vazia e falha.
+    started: bool,
+    /// Frames em que a fila foi achada vazia: o som falhou desde o anterior.
+    underruns: u32,
+    written: u64,
 }
 
 impl AudioDemo {
@@ -50,6 +55,9 @@ impl AudioDemo {
             gain: 0.0,
             on: false,
             retry_in: RETRY_FRAMES,
+            started: false,
+            underruns: 0,
+            written: 0,
         }
     }
 
@@ -75,8 +83,13 @@ impl AudioDemo {
                 Platform::audio_close(audio);
             }
             self.retry_in = 0;
+            self.started = false;
             return;
         };
+
+        if queued == 0 && self.started {
+            self.underruns += 1;
+        }
 
         let capacity = Platform::audio_capacity(audio);
         let count = self.lead.min(capacity).saturating_sub(queued) as usize;
@@ -92,7 +105,19 @@ impl AudioDemo {
             frame.fill(self.phase.sin() * self.gain);
             self.phase = (self.phase + step) % TAU;
         }
-        Platform::audio_write(audio, &self.samples);
+        if Platform::audio_write(audio, &self.samples) {
+            self.started = true;
+            self.written += count as u64;
+        }
+    }
+
+    /// Resumo: quanto foi tocado e quantas vezes a fila esvaziou.
+    pub fn print_stats(&self) {
+        forge_log!(
+            "[audio] {:.1} s escritos, fila vazia em {} frames",
+            self.written as f64 / AUDIO_SAMPLE_RATE as f64,
+            self.underruns
+        );
     }
 }
 

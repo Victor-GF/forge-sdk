@@ -11,21 +11,31 @@
 //! `FRAME_RATE` frames por segundo, com espera precisa. O codigo do jogo
 //! (`sandbox/game`) roda numa DLL recarregada quando recompilada
 //! (`hot_reload`).
+//!
+//! Argumentos:
+//! - `--auto`: roda um roteiro fixo e fecha sozinho, conferindo o que da
+//!   para conferir sem pessoa (ver `auto`). No fim, os resumos de tempo
+//!   mostram a cauda dos frames.
+//! - `--panic`: testa o caminho de panic.
 
 mod audio_demo;
+mod auto;
 mod file_check;
 mod hot_reload;
 mod memory_check;
 mod parallel_sum;
 mod pool_bench;
 mod sync_check;
+mod timing;
 mod workers;
 
 use audio_demo::AudioDemo;
+use auto::Auto;
 use forge_core::cache::CACHE_LINE;
 use forge_os::prelude::*;
-use hot_reload::GameCode;
+use hot_reload::{Framebuffer, GameCode};
 use parallel_sum::ParallelSum;
+use timing::Timing;
 use workers::Pool;
 
 /// Frames por segundo do loop, com espera precisa (`timer_wait_until`).
@@ -34,6 +44,9 @@ const SUM_VALUES: usize = 1 << 20;
 const JOBS_PER_WORKER: usize = 4;
 /// Memoria do jogo: do executavel, sobrevive ao hot reload.
 const GAME_MEMORY: usize = 1 << 20;
+/// Resolucao do framebuffer do jogo, esticada para a janela.
+const SCREEN_WIDTH: u32 = 480;
+const SCREEN_HEIGHT: u32 = 270;
 /// Nome que o cargo da ao cdylib no Windows: sem prefixo `lib`.
 const GAME_DLL: &str = "forge_sandbox_game.dll";
 
@@ -57,6 +70,8 @@ fn main() {
     if std::env::args().any(|arg| arg == "--panic") {
         panic!("panic de teste pedido por --panic (çã)");
     }
+
+    let mut auto = Auto::from_args();
 
     log_cpu();
     memory_check::run();
@@ -83,12 +98,15 @@ fn main() {
     );
     forge_log!("[window] F11 ou Alt+Enter alterna tela cheia");
 
+    let mut audio = AudioDemo::new(FRAME_RATE);
+
+    // O relogio dos frames comeca depois de toda a inicializacao: abrir o
+    // audio, por exemplo, leva centenas de ms e nao e um frame.
     let timer = Platform::timer_create().expect("timer_create falhou");
     let frame_ticks = Platform::time_frequency() / FRAME_RATE;
     let mut next_frame = Platform::time_ticks() + frame_ticks;
     let mut last_frame = Platform::time_ticks();
     let mut frame_time = Timing::new();
-    let mut audio = AudioDemo::new(FRAME_RATE);
 
     let mut frames: u64 = 0;
     let mut size = (0, 0);
@@ -96,6 +114,8 @@ fn main() {
     // loop inteiro.
     let mut input = Input::default();
     let mut sum_time = Timing::new();
+    let mut screen = Framebuffer::new(SCREEN_WIDTH, SCREEN_HEIGHT);
+    let mut present_time = Timing::new();
     while !Platform::window_close_requested(&window) {
         Platform::window_pump_events();
 
@@ -107,6 +127,7 @@ fn main() {
 
         Platform::window_input(&window, &mut input.keyboard, &mut input.mouse);
         Platform::gamepads_update(&mut input.gamepads);
+        let finished = auto.as_mut().is_some_and(|auto| auto.step(frames, &window, &mut input, &game));
 
         let keyboard = &input.keyboard;
         let alt = keyboard.key(Key::LeftAlt).down || keyboard.key(Key::RightAlt).down;
@@ -119,7 +140,10 @@ fn main() {
 
         game.poll();
         // `pages_alloc` entrega memoria zerada e alinhada a pagina, so do jogo.
-        unsafe { game.update(game_memory, GAME_MEMORY, &input, frames) };
+        unsafe { game.update(game_memory, GAME_MEMORY, &input, &mut screen, frames) };
+        let start = Platform::time_ticks();
+        Platform::window_present(&window, &screen.pixels, screen.width, screen.height);
+        present_time.add(Platform::time_ticks() - start);
 
         let start = Platform::time_ticks();
         sum.run(&pool);
@@ -132,13 +156,26 @@ fn main() {
         // breakpoint) recomeca a contagem a partir de agora.
         Platform::timer_wait_until(&timer, next_frame);
         let now = Platform::time_ticks();
-        frame_time.add(now - last_frame);
+        let elapsed = now - last_frame;
+        frame_time.add(elapsed);
+        if elapsed > frame_ticks * 3 / 2 {
+            let ms = Platform::time_ticks_to_seconds(elapsed) * 1000.0;
+            forge_log!("[time] frame {} lento: {ms:.1} ms", frames - 1);
+        }
         last_frame = now;
         next_frame += frame_ticks;
         if now >= next_frame {
             next_frame = now + frame_ticks;
         }
+        if finished {
+            break;
+        }
     }
+
+    if let Some(auto) = &auto {
+        auto.finish(&game);
+    }
+    audio.print_stats();
 
     drop(audio);
     Platform::window_destroy(window);
@@ -146,8 +183,10 @@ fn main() {
     unsafe { Platform::pages_release(game_memory) };
     let jobs = pool.stop();
     forge_log!("[sandbox] {frames} frames, {jobs} jobs");
-    sum_time.print("sum.run");
-    frame_time.print("frame");
+    sum_time.print("sum.run", None);
+    present_time.print("present", None);
+    // Um frame que passa de 1,5 frame e um engasgo visivel.
+    frame_time.print("frame", Some(frame_ticks * 3 / 2));
     Platform::timer_destroy(timer);
 }
 
@@ -173,40 +212,5 @@ fn log_cpu() {
     );
     if cpu.cache_line != 0 && cpu.cache_line as usize != CACHE_LINE {
         forge_log!("[cpu] aviso: CACHE_LINE e {CACHE_LINE}, mas a linha real e {}", cpu.cache_line);
-    }
-}
-
-/// Minimo, media e maximo de uma medida repetida, em ticks.
-struct Timing {
-    count: u64,
-    total: u64,
-    min: u64,
-    max: u64,
-}
-
-impl Timing {
-    fn new() -> Timing {
-        Timing { count: 0, total: 0, min: u64::MAX, max: 0 }
-    }
-
-    fn add(&mut self, ticks: u64) {
-        self.count += 1;
-        self.total += ticks;
-        self.min = self.min.min(ticks);
-        self.max = self.max.max(ticks);
-    }
-
-    fn print(&self, name: &str) {
-        if self.count == 0 {
-            return;
-        }
-        let us = |ticks: u64| Platform::time_ticks_to_nanos(ticks) as f64 / 1000.0;
-        forge_log!(
-            "[time] {name}: media {:.1} us, min {:.1} us, max {:.1} us ({} medidas)",
-            us(self.total / self.count),
-            us(self.min),
-            us(self.max),
-            self.count,
-        );
     }
 }

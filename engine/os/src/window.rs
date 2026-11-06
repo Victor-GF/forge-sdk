@@ -67,6 +67,26 @@ pub trait Window {
     /// Handles do SO para a API grafica. Validos ate `window_destroy`.
     fn window_native(window: &WindowHandle) -> NativeWindow;
 
+    /// Mostra uma imagem de `width` x `height` pixels na janela: o caminho
+    /// para desenhar sem GPU (framebuffer por software).
+    ///
+    /// `pixels` tem as linhas de cima para baixo, uma colada na outra
+    /// (`width` pixels por linha), com cada pixel em `0x00RRGGBB`: na
+    /// memoria, os bytes azul, verde, vermelho e um nao usado.
+    ///
+    /// A imagem e esticada para o maior tamanho que cabe na area de desenho
+    /// sem distorcer, centralizada, com barras pretas no resto. Esticar e
+    /// por vizinho mais proximo: uma imagem pequena (480x270, por exemplo)
+    /// fica com pixels grandes e nitidos.
+    ///
+    /// A copia e feita pela CPU, a cada chamada. Serve para resolucoes
+    /// modestas, ferramentas e telas de erro; a GPU e o caminho para o resto.
+    ///
+    /// # Panics
+    /// Se `width` ou `height` for zero, ou se `pixels` tiver menos que
+    /// `width * height` itens.
+    fn window_present(window: &WindowHandle, pixels: &[u32], width: u32, height: u32);
+
     /// Entrega o input de teclado e mouse acumulado nesta janela desde a
     /// chamada anterior, e comeca a acumular o proximo frame. Uma vez por
     /// frame, depois de `window_pump_events`.

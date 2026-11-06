@@ -394,6 +394,86 @@ impl Window for Win32 {
         unsafe { NativeWindow::Win32 { hinstance: (*state).instance, hwnd: (*state).hwnd } }
     }
 
+    /// GDI: `StretchDIBits` copia e estica os pixels direto da nossa memoria
+    /// para a janela, sem bitmap intermediario. As barras sao pintadas a cada
+    /// chamada: a area fora da imagem nao tem outro dono.
+    fn window_present(window: &WindowHandle, pixels: &[u32], width: u32, height: u32) {
+        assert!(width > 0 && height > 0, "imagem vazia");
+        assert!(
+            pixels.len() >= width as usize * height as usize,
+            "pixels menor que width x height"
+        );
+        unsafe {
+            let hwnd = (*state(window)).hwnd;
+            let mut client: ffi::RECT = mem::zeroed();
+            ffi::GetClientRect(hwnd, &mut client);
+            let (area_w, area_h) = (client.right as i64, client.bottom as i64);
+            if area_w <= 0 || area_h <= 0 {
+                // Minimizada: nao ha onde desenhar.
+                return;
+            }
+
+            // Maior tamanho que cabe sem distorcer: limitado pela largura ou
+            // pela altura, o que apertar primeiro.
+            let (w, h) = (width as i64, height as i64);
+            let (dest_w, dest_h) = if area_w * h <= area_h * w {
+                (area_w, area_w * h / w)
+            } else {
+                (area_h * w / h, area_h)
+            };
+            let (x, y) = ((area_w - dest_w) / 2, (area_h - dest_h) / 2);
+
+            let dc = ffi::GetDC(hwnd);
+            if dc.is_null() {
+                return;
+            }
+            // Barras: em cima e embaixo, ou dos lados.
+            let bar = |x: i64, y: i64, w: i64, h: i64| {
+                if w > 0 && h > 0 {
+                    ffi::PatBlt(dc, x as ffi::INT, y as ffi::INT, w as ffi::INT, h as ffi::INT, ffi::BLACKNESS);
+                }
+            };
+            bar(0, 0, area_w, y);
+            bar(0, y + dest_h, area_w, area_h - y - dest_h);
+            bar(0, y, x, dest_h);
+            bar(x + dest_w, y, area_w - x - dest_w, dest_h);
+
+            let info = ffi::BITMAPINFO {
+                bmiHeader: ffi::BITMAPINFOHEADER {
+                    biSize: mem::size_of::<ffi::BITMAPINFOHEADER>() as ffi::DWORD,
+                    biWidth: width as ffi::LONG,
+                    biHeight: -(height as ffi::LONG),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: ffi::BI_RGB,
+                    biSizeImage: 0,
+                    biXPelsPerMeter: 0,
+                    biYPelsPerMeter: 0,
+                    biClrUsed: 0,
+                    biClrImportant: 0,
+                },
+                bmiColors: [ffi::RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }],
+            };
+            ffi::SetStretchBltMode(dc, ffi::COLORONCOLOR);
+            ffi::StretchDIBits(
+                dc,
+                x as ffi::INT,
+                y as ffi::INT,
+                dest_w as ffi::INT,
+                dest_h as ffi::INT,
+                0,
+                0,
+                width as ffi::INT,
+                height as ffi::INT,
+                pixels.as_ptr().cast(),
+                &info,
+                ffi::DIB_RGB_COLORS,
+                ffi::SRCCOPY,
+            );
+            ffi::ReleaseDC(hwnd, dc);
+        }
+    }
+
     fn window_input(window: &WindowHandle, keyboard: &mut Keyboard, mouse: &mut Mouse) {
         let state = unsafe { &mut *state(window) };
         *keyboard = state.keyboard;

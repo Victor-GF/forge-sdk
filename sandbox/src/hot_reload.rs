@@ -19,7 +19,28 @@ use forge_os::file::{PATH_CAPACITY, path_parent};
 use forge_os::prelude::*;
 
 /// Assinatura de `game_update` em `sandbox/game/src/lib.rs`.
-type GameUpdate = unsafe extern "C" fn(memory: *mut u8, size: usize, input: *const Input, frame: u64);
+type GameUpdate = unsafe extern "C" fn(
+    memory: *mut u8,
+    size: usize,
+    input: *const Input,
+    pixels: *mut u32,
+    width: u32,
+    height: u32,
+    frame: u64,
+);
+
+/// Imagem que o jogo pinta a cada frame e o sandbox mostra na janela.
+pub struct Framebuffer {
+    pub pixels: Vec<u32>,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Framebuffer {
+    pub fn new(width: u32, height: u32) -> Framebuffer {
+        Framebuffer { pixels: vec![0; width as usize * height as usize], width, height }
+    }
+}
 
 /// Frames sem mudanca no horario da DLL antes de recarregar (~160 ms).
 const SETTLE_FRAMES: u32 = 10;
@@ -38,6 +59,8 @@ pub struct GameCode {
     /// Ultimo horario visto, e ha quantos frames ele nao muda.
     seen: u64,
     stable_frames: u32,
+    /// Cargas que deram certo, contando a primeira.
+    reloads: u32,
 }
 
 impl GameCode {
@@ -57,6 +80,7 @@ impl GameCode {
             attempted: 0,
             seen: 0,
             stable_frames: 0,
+            reloads: 0,
         };
         match Platform::file_modified(&code.source) {
             Some(modified) => code.load(modified),
@@ -68,14 +92,32 @@ impl GameCode {
         code
     }
 
+    /// Caminho da DLL que o compilador gera.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Cargas que deram certo, contando a primeira.
+    pub fn reloads(&self) -> u32 {
+        self.reloads
+    }
+
     /// Chama o `game_update` carregado. Sem DLL, nao faz nada.
     ///
     /// # Safety
     /// O contrato de `game_update`: `memory` com `size` bytes, alinhada a
     /// pagina, zerada antes da primeira chamada e so do jogo.
-    pub unsafe fn update(&self, memory: *mut u8, size: usize, input: &Input, frame: u64) {
+    pub unsafe fn update(
+        &self,
+        memory: *mut u8,
+        size: usize,
+        input: &Input,
+        screen: &mut Framebuffer,
+        frame: u64,
+    ) {
         if let Some(update) = self.update {
-            unsafe { update(memory, size, input, frame) }
+            let pixels = screen.pixels.as_mut_ptr();
+            unsafe { update(memory, size, input, pixels, screen.width, screen.height, frame) }
         }
     }
 
@@ -105,11 +147,13 @@ impl GameCode {
         self.seen = modified;
         let next = 1 - self.current;
         let copy = &self.copies[next];
+        let start = Platform::time_ticks();
 
         if !Platform::file_copy(&self.source, copy) {
             forge_log!("[hot] falha ao copiar para {copy}");
             return;
         }
+        let copied = Platform::time_ticks();
         let Some(library) = Platform::library_open(copy) else {
             forge_log!("[hot] falha ao carregar {copy}");
             return;
@@ -128,7 +172,14 @@ impl GameCode {
             unsafe { Platform::library_close(old) };
         }
         self.current = next;
-        forge_log!("[hot] carregado {copy}");
+        self.reloads += 1;
+        let ms = |ticks: u64| Platform::time_ticks_to_seconds(ticks) * 1000.0;
+        let done = Platform::time_ticks();
+        forge_log!(
+            "[hot] carregado {copy}: copia {:.1} ms, carga {:.1} ms",
+            ms(copied - start),
+            ms(done - copied)
+        );
     }
 }
 
