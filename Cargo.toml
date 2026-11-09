@@ -14,6 +14,7 @@ publish = false
 # Nenhuma dependencia externa. Tudo o que falar com o SO e escrito a mao.
 [workspace.dependencies]
 forge_core = { path = "engine/core" }
+forge_math = { path = "engine/math" }
 forge_os = { path = "engine/os" }
 
 # Sem unwinding: panic vira abort, como um assert em C.
